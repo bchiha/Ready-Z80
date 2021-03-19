@@ -1,0 +1,51 @@
+;Example of filling the screen 4 pixels at a time sequentially
+;
+            ORG     #9C40       ;40000 decimal
+
+KEYWAT      EQU     #BB06       ;Wait for a key press
+SCREEN      EQU     #C000       ;Start of Screen memeory location
+SETMODE     EQU     #BC0E       ;A=00,01,02; Sets the screen mode
+CR          EQU     #0D         ;CR
+
+
+START:               
+            LD      A,#01       ;Set Mode
+            CALL    SETMODE     ;1
+            LD      BC,#4000    ;Screen Memory size
+            LD      HL,SCREEN   ;Screen start address
+            LD      DE,#0000    ;2k Counter
+LOOP:                  
+            ;Display 4 pixels and move to next address.  Keep filling screen until full
+            ;The 4 pixels are colours 0, 1, 2 and 3.
+            LD      A,%01010011 ;Load A with 4 Pixel data (Colour 0,1,2 & 3)
+            LD      (HL),A      ;Save to screen
+            CALL    DELAY       ;Wait a bit
+            INC     HL          ;Move to next 4 pixel address
+            INC     DE          ;Increment 2k counter
+            LD      A,D         ;Check if #800 hex reached
+            CP      #08         ;Is it 2k?
+            JR      NZ,SKIP
+            LD      D,#00       ;Reset 2k counter
+            CALL    KEYWAT      ;Wait for any key to be pressed
+SKIP:
+            DEC     BC          ;Repeat #4000 times
+            LD      A,B 
+            OR      C 
+            JR      NZ,LOOP     ;Exit if all printed
+            CALL    KEYWAT      ;Wait for key press
+            CP      CR          ;Repeat if 
+            RET     Z           ;Key isn't a Carriage Return
+            JR      START    
+
+            ;Simple Delay routine
+DELAY:               
+            PUSH    BC 
+            LD      BC,#0080 
+D1:                  
+            DEC     BC 
+            LD      A,C 
+            OR      B 
+            JR      NZ,D1 
+            POP     BC 
+            RET      
+
