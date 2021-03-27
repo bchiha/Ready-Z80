@@ -1,0 +1,294 @@
+; Conway's Game of Life for Amstrad CPC
+; -------------------------------------
+;(Fast Version with Double Buffering)
+;
+; Written by Brian Chiha
+; brian.chiha@gmail.com  -- Mar 2021
+;
+; Game of Life is a cellular automation simulation.  Each cell evolves based on the number
+; of cells that surround it.  The basic cell rules are:
+;
+;    * Any live cell with two or three live neighbours survives.
+;    * Any dead cell with three live neighbours becomes a live cell.
+;    * All other live cells die in the next generation. Similarly, all other dead cells stay dead.
+;
+; Setup
+; ----- 
+;
+; Compile and load on an Amstrad CPC.  Code will be placed in memory #9C40
+;
+; To Use
+; ------
+;
+; CALL 40000
+; Press Escape to quit and any other key to start a new random cell layout
+;
+; Enjoy life taking on its own.....
+
+            ORG     #9C40             ;40000 decimal
+
+SETMODE     EQU     #BC0E             ;A=00,01,02; Sets the screen mode
+KEYREAD     EQU     #BB09             ;Test for a key press, Carry set if pressed, A=key
+
+SCREEN      EQU     #C000             ;Primary Screen Base location
+SCRNPTR     EQU     #30               ;CRTC Register 12 data that points to #C000 screen location
+SWAPSCRNPTR EQU     #20               ;CRT Controller XOR bit flip #C000 <-> #4000
+SWAPSCREEN  EQU     #80               ;XOR bit flip for screen memory
+
+ESC         EQU     #FC 
+ROWS        EQU     25                ;25 Rows on screen
+COLS        EQU     40                ;40 Columns on screen
+CURRBASE    EQU     #8000             ;Base address of Cell primary cell table
+CURRSTART   EQU     CURRBASE+COLS+2   ;Primary start position Base+42
+NEXTBASE    EQU     CURRBASE+#500     ;Base address of Cell secondary cell table
+NEXTSTART   EQU     NEXTBASE+COLS+2   ;Secondary start position Base+42
+
+;Calcuation for next cells are done from memeory #8000.  Current Base is what is displayed
+;on the screen, Next Base is used to place the next life cycle.  Once all cells are check
+;Next Base will be copied to Current Base
+;
+;To Work out top/bottom cells, I place a zero row one above and below the 1000 cell table.  To
+;handle left/right cells, I place one zero column on the left.  And for the bottom right cell
+;I have one extra byte.
+;
+;If Cell is alive it will be set to 1, if it is dead, it will be zero.
+
+; Memory Map With Upper/Lower/Left/Right buffer.  Total of 1108 Bytes
+; X = potential cell position, 0 = always zero
+;   000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F202122232425262728
+;00  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+;01  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;02  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;03  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;04  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;05  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;06  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;07  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;08  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;09  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;0A  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;0B  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;0C  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;0D  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;0E  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;0F  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;10  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;11  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;12  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;13  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;14  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;15  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;16  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;17  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;18  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;19  0 X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X X
+;1A  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+;1B  0  <= needed for last bottom right check
+
+START:               
+            LD      A,#01           ;Mode 1
+            CALL    SETMODE         ;Set Mode
+
+            LD      HL,CURRBASE     ;Clear Current Cell data location to be all zeros
+            LD      DE,CURRBASE+1 
+            XOR     A               ;Set to Zero
+            LD      (HL),A 
+            LD      BC,#0454        ;1108 cells to be cleared
+            LDIR                    ;Do the Copy
+            LD      HL,NEXTBASE     ;Clear Current Cell data location to be all zeros
+            LD      DE,NEXTBASE+1 
+            XOR     A               ;Set to Zero
+            LD      (HL),A 
+            LD      BC,#0454        ;1108 cells to be cleared
+            LDIR                    ;Do the Copy
+NEWCELLS:            
+            CALL    LOAD_RANDOM          ;Initialize cell data with random values
+LIFE:                
+            ;Swap the drawing screen to the display not being show.  This will draw it
+            ;in the background.  Once the draw is complete, then show it.
+            CALL    SWAP_SCREEN_BUFFER   ;Point to hidden screen 
+            CALL    DISPLAY_CELLS        ;Fill screen with current cells
+            CALL    SWAP_SCREEN_PTR      ;Show hidden screen
+            CALL    CONWAY               ;Do Conway Rules on current cells
+            CALL    KEYREAD              ;Check for key hit
+            JR      NC,LIFE              ;No key, do next life iteration
+            CP      ESC                  ;Escape pressed?
+            JR      NZ,NEWCELLS          ;Key pressed but not Escape, reload new random cells
+            LD      A,(CURRPTR)          ;Escape has been pressed
+            CP      #10                  ;Set screen to default #C000
+            RET     NZ                   ;To exit cleanly
+            CALL    SWAP_SCREEN_PTR 
+            RET                          ;Exit back to Basic
+
+            ;Update the matrix with Conway Rules.  Nested for loop with Rows and Columns.
+CONWAY:              
+            LD      IX,CURRSTART 
+            LD      HL,NEXTSTART 
+            LD      B,ROWS               ;25 Rows
+NEWROW:              
+            PUSH    BC ;Save Registers
+            LD      B,COLS ;40 Columns
+NEWCOL:              
+            ;Check the current cell and update count on number of live cells.  Use IX to
+            ;make checking easier
+            LD      A,(IX+214)           ; Look upper left (-42 cells)
+            ADD     A,(IX+215)           ; Look upper mid (-41 cells)
+            ADD     A,(IX+216)           ; Look upper right (-40 cells)
+            ADD     A,(IX+255)           ; Look mid left (-1 cell)
+            ADD     A,(IX+1)             ; Look mid right (+1 cell)
+            ADD     A,(IX+40)            ; Look bottom left (+40 cells)
+            ADD     A,(IX+41)            ; Look bottom mid (+41 cells)
+            ADD     A,(IX+42)            ; Look bottom right (+42 cells)
+EVAL:       
+            ;Evaluate surrounding cell count to create or destroy current cell
+            ;This is the rules being applied for the cell
+            LD      D,#01                ;Alive
+            CP      #03                  ;Check if 3 cells around
+            JR      Z,STOREC             ;Save Alive cell
+            LD      D,#00                ;Dead
+            CP      #02                  ;Check if 2 cells around
+            JR      NZ,STOREC            ;Save Dead cell if not 2
+            LD      A,(IX+0)             ;Current Cell had only 2 cells around
+            AND     #01                  ;Keep it alive if already alive.
+            LD      D,A                  ;Load current cell in A
+STOREC:              
+            ;Save the new cell to the Next Cell Cycle table
+            LD      A,D                  ;D stores cell evaluation
+            LD      (HL),A               ;Update cell on Next Matric
+            INC     HL                   ;Move to next Column
+            INC     IX                   ;Move to next Column
+            DJNZ    NEWCOL               ;Repeat until all columns are checked
+
+            INC     HL                   ;Skip left zero buffer
+            INC     IX                   ;Skip left zero buffer
+            POP     BC 
+            DJNZ    NEWROW               ;Repeat until all rows are checked
+
+            ;Copy next matrix to current
+            LD      HL,NEXTSTART 
+            LD      DE,CURRSTART 
+            LD      BC,#0400             ;1024 cells (include left zero buffer)
+            LDIR                         ;Do the Copy
+
+            RET                          ;Exit
+
+            ;Display Current Cells to Current Screen.  This effectively prints out the cells
+            ;To the screen.  Screen will not be on display when this is happening.
+DISPLAY_CELLS:       
+            LD      HL,(CURRBUFF)        ;Save HL with start of Screen address
+            LD      DE,CURRSTART         ;Save DE with start of cells address
+            LD      B,ROWS               ;25 Rows
+LOOP1:               
+            PUSH    BC                   ;Save Registers
+            PUSH    HL 
+            LD      B,COLS               ;40 Columns
+LOOP2:               
+            PUSH    BC                   ;Save Registers
+            PUSH    HL 
+            LD      A,(DE)               ;Get Current Cell byte
+            PUSH    DE                   ;Save DE
+            LD      DE,ALIVE             ;Store DE with start of Alive Cell (Pixels) address
+            OR      A                    ;Is it Zero?
+            JR      NZ,DO_PLOT           ;No its alive, Plot 8x8 Cell
+            LD      DE,DEAD              ;Store DE with start of Dead Cell (Pixels) address
+DO_PLOT:             
+            ;This clever routine will plot an 8x8 pixel handling the Amstrad weird screen 
+            ;memory map: IE: one pixel down is #800 bytes, eight pixels down is #50 bytes!
+            LD      BC,#0208             ;B=2 bytes wide (8 pixles) and C=8 pixels down
+            CALL    PLOT                 ;Draw the Sprite (8x8)
+            POP     DE 
+            POP     HL                   ;Restore starting pixel address
+            INC     HL                   ;Move 8 pixels to the right
+            INC     HL 
+            INC     DE                   ;Move to next cell
+
+            POP     BC                   ;Restore Current Column count
+            DJNZ    LOOP2                ;Loop until 40 columns have been printed
+            POP     HL                   ;Restore the left hand screen address
+            LD      BC,#50               ;Load BC with next ROW down (8 pixels)
+            ADD     HL,BC                ;Move screen address down one ROW
+            INC     DE                   ;Move to next cell
+            POP     BC                   ;Restore Current Row count
+            DJNZ    LOOP1                ;Loop until 25 rows have been printed
+            RET                          ;Exit
+
+            ;Draw the 8x8 Pixels.  Each new row of pixels is #800 bytes in memory down!
+            ;If passed the end of the screen, set row to the top of the screen plus column offset.
+PLOT:                
+            PUSH    BC                   ;Save Registers
+            PUSH    HL 
+DO_ROW:              
+            LD      A,(DE)               ;Load A with 4 pixels data
+            LD      (HL),A               ;Update screen with new value
+            INC     HL                   ;Move 4 pixels to the right (one byte)
+            INC     DE                   ;Get next 4 pixels of data
+            DJNZ    DO_ROW               ;Repeat the pixel display (do twice as B=2)
+            POP     HL                   ;Restore left most pixel location
+            LD      BC,&0800             ;Load BC with next ROW down (#800 bytes!)
+            ADD     HL,BC                ;Move screen address down on pixle ROW
+            POP     BC                   ;Restore pixel row count (8 pixels)
+            DEC     C                    ;Decrease pixel row
+            JR      NZ,PLOT              ;Move to next pixel row until 0
+            RET                          ;Exit
+
+            ;Swap screen location from #C000 to #4000 and back
+SWAP_SCREEN_BUFFER:  
+            LD      A,(CURRBUFF+1) 
+            XOR     SWAPSCREEN 
+            LD      (CURRBUFF+1),A 
+            RET      
+            ;Swap the CRTC register 12 from #30 to #10
+SWAP_SCREEN_PTR:     
+            LD      A,(CURRPTR) 
+            XOR     SWAPSCRNPTR 
+            LD      (CURRPTR),A 
+            LD      BC,#BC0C             ;get CRTC register 12 (0C) 
+            OUT     (C),C 
+            INC     B                    ;update CRTC register 12 with A
+            OUT     (C),A 
+            RET      
+
+            ;Load Random cells in memory.  This interates through all 1000 cells and calls
+            ;an psuedo random routine.  If that routine sets the carry flag then set the 
+            ;cell to Alive.
+LOAD_RANDOM:         
+            LD      HL,CURRSTART 
+            LD      B,ROWS 
+R0:                  
+            PUSH    BC 
+            LD      B,COLS 
+R1:                  
+            CALL    RAND                 ;Call random routine
+            LD      A,#01                ;Default to Alive
+            JR      C,STORECELL 
+            XOR     A                    ;Set to Dead
+STORECELL:           
+            LD      (HL),A               ;Store the cell
+            INC     HL 
+            DJNZ    R1 
+            INC     HL                   ;Skip left hand zero column
+            POP     BC 
+            DJNZ    R0 
+            RET                          ;Exit
+
+            ;Random boolean value.  Carry flag set if true
+RAND:                
+            PUSH    BC 
+            LD      A,R                  ;Random Number Generation
+            LD      B,A 
+            RRCA                         ;Multiply by 32
+            RRCA     
+            RRCA     
+            XOR     #1F 
+            ADD     A,B 
+            SBC     A,#FF 
+            POP     BC 
+            RRCA                         ;Check bit 0 if set then make true
+            RET      
+            
+            ;8x8 Cell sprite. Each byte represents 4 pixels
+ALIVE:      DB      #00,#00,#30,#C0,#73,#EC,#63,#6C,#63,#6C,#73,#EC,#30,#C0,#00,#00 ;Cell Alive
+DEAD:       DB      #00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00 ;Cell Dead
+            ;Storate to Current Screen and CRTC register 12
+CURRBUFF:   DW      SCREEN 
+CURRPTR:    DB      SCRNPTR 

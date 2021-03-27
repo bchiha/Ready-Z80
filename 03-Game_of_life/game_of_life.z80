@@ -1,0 +1,246 @@
+
+
+            ORG     #9C40   ;40000
+
+SETMODE     EQU     #BC0E    ;set mode
+KEYREAD     EQU     #BB09    ;keyread
+
+SCREEN      EQU     #C000
+SCRNPTR     EQU     #30 
+SWAPSCRNPTR EQU     #20 
+SWAPSCREEN  EQU     #80 
+
+ESC         EQU     #FC 
+ROWS        EQU     25    
+COLS        EQU     40    
+
+CURRBASE    EQU     #8000           
+CURRSTART   EQU     CURRBASE+COLS+2 
+
+NEXTBASE    EQU     CURRBASE+#500   
+NEXTSTART   EQU     NEXTBASE+COLS+2 
+
+START:
+
+LD      A,#01   
+CALL    SETMODE 
+
+LD      HL,CURRBASE  
+LD      DE,CURRBASE+1
+XOR     A            
+LD      (HL),A 
+LD      BC,#0454     
+LDIR 
+
+LD      HL,NEXTBASE  
+LD      DE,NEXTBASE+1
+XOR     A            
+LD      (HL),A 
+LD      BC,#0454     
+LDIR                 
+
+NEWCELLS:
+CALL    LOAD_RANDOM  
+
+LIFE:
+CALL    SWAP_SCREEN_BUFFER
+CALL    DISPLAY_CELLS
+CALL    SWAP_SCREEN_PTR
+CALL    CONWAY
+CALL    KEYREAD
+JR NC,LIFE
+CP ESC
+JR NZ,NEWCELLS
+LD      A,(CURRPTR)     
+CP      #10             
+RET     NZ              
+CALL    SWAP_SCREEN_PTR 
+RET
+
+CONWAY:
+LD      IX,CURRSTART
+LD      HL,NEXTSTART
+LD      B,ROWS      
+
+NEWROW:
+PUSH BC
+LD B,COLS
+NEWCOL:
+LD      A,(IX+214) 
+ADD     A,(IX+215) 
+ADD     A,(IX+216) 
+ADD     A,(IX+255) 
+ADD     A,(IX+1)   
+ADD     A,(IX+40)  
+ADD     A,(IX+41)  
+ADD     A,(IX+42)
+EVAL:
+LD      D,#01     
+CP      #03       
+JR      Z,STOREC  
+LD      D,#00     
+CP      #02       
+JR      NZ,STOREC 
+LD      A,(IX+0)  
+AND     #01       
+LD      D,A       
+
+STOREC:
+LD      A,D      
+LD      (HL),A   
+INC     HL       
+INC     IX       
+DJNZ    NEWCOL   
+
+INC     HL     
+INC     IX     
+POP     BC 
+DJNZ    NEWROW 
+
+LD      HL,NEXTSTART
+LD      DE,CURRSTART
+LD      BC,#0400    
+LDIR                
+RET
+
+
+
+
+
+
+
+DISPLAY_CELLS:
+LD      HL,(CURRBUFF)   
+LD      DE,CURRSTART
+LD      B,ROWS      
+
+LOOP1:
+PUSH    BC      
+PUSH    HL 
+LD      B,COLS  
+LOOP2:
+PUSH    BC         
+PUSH    HL 
+LD      A,(DE)     
+PUSH    DE         
+LD      DE,ALIVE   
+OR      A          
+JR      NZ,DO_PLOT 
+LD      DE,DEAD    
+
+DO_PLOT:
+LD      BC,#0208 
+CALL    PLOT     
+POP     DE 
+POP     HL       
+INC     HL       
+INC     HL 
+INC     DE       
+POP     BC       
+DJNZ    LOOP2    
+POP     HL       
+LD      BC,#50   
+ADD     HL,BC    
+INC     DE       
+POP     BC       
+DJNZ    LOOP1    
+RET              
+
+PLOT:
+PUSH    BC 
+PUSH    HL 
+
+DO_ROW:
+LD      A,(DE)   
+LD      (HL),A   
+INC     HL       
+INC     DE       
+DJNZ    DO_ROW   
+POP     HL       
+LD      BC,&0800 
+ADD     HL,BC    
+POP     BC       
+DEC     C        
+JR      NZ,PLOT  
+RET              
+
+SWAP_SCREEN_BUFFER:
+LD      A,(CURRBUFF+1) 
+XOR     SWAPSCREEN 
+LD      (CURRBUFF+1),A 
+RET      
+
+SWAP_SCREEN_PTR:
+LD      A,(CURRPTR)
+XOR     SWAPSCRNPTR
+LD      (CURRPTR),A
+LD      BC,#BC0C   
+OUT     (C),C 
+INC     B          
+OUT     (C),A 
+RET      
+
+
+LOAD_RANDOM:
+
+LD      HL,CURRSTART 
+LD      B,ROWS
+R0:
+PUSH    BC 
+LD      B,COLS 
+R1:
+CALL RAND
+LD A,#01
+JR C,STORECELL
+XOR A
+
+STORECELL:
+LD (HL),A
+INC HL
+DJNZ R1
+INC HL
+POP BC
+DJNZ R0
+RET
+
+RAND:
+PUSH    BC 
+LD      A,R  
+LD      B,A 
+RRCA         
+RRCA     
+RRCA     
+XOR     #1F 
+ADD     A,B 
+SBC     A,#FF
+POP     BC 
+RRCA         
+RET      
+
+ALIVE:     DB      #00,#00,#70,#E0,#70,#E0,#70,#E0,#70,#E0,#70,#E0,#70,#E0,#00,#00
+DEAD:      DB      #00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00
+
+CURRBUFF:   DW      SCREEN 
+CURRPTR:    DB      SCRNPTR 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

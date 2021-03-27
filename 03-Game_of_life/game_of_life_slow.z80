@@ -1,0 +1,226 @@
+;Game of Life for Amstrad CPC 6128
+;(Really, Really, Really Slow Version. DO NOT USE as it's CRAP!)
+
+;Rules
+;Any live cell with two or three live neighbours survives.
+;Any dead cell with three live neighbours becomes a live cell.
+;All other live cells die in the next generation. Similarly, all other dead cells stay dead.
+
+ORG         #9C40               ;40000 decimal
+
+SETMODE:    EQU #BC0E           ;A=00,01,02; Sets the screen mode
+GETCHAR:    EQU #BB60           ;Get char from screen A=ascii char, carry=set if okay
+SETCUR:     EQU #BB75           ;Set curror to H=col, L=row
+SETROW:     EQU #BB72           ;A=Row 1-25
+SETCOL:     EQU #BB6F           ;A=Col 1-40
+PRINT:      EQU #BB5A           ;Output A to current cursor position
+PAGESWP:    EQU #BD1F           ;Set Hardware Screen Base / Offset to A and HL
+CLEAR:      EQU #BB6C           ;Clear the screen
+SCNBCK:     EQU #BD55           ;Set Base and Offset Screen to A and HL
+SCRBASE:    EQU #B7C6           ;Screen Base location
+
+ALIVE:      EQU #E9             ;Alive Cell Character
+DEAD:       EQU #20             ;Dead Cell Character
+ROWS:       EQU 25              ;25 Rows on screen
+COLS:       EQU 40              ;40 Columns on screen
+
+
+START:
+            LD A,#01
+            CALL SETMODE
+
+            CALL CLEAR
+            CALL LOAD_RANDOM
+
+LOOP:
+            ;DO UPDATE TO other screen
+            CALL DO_CONWAY
+
+            LD A,(SCRBASE)
+            XOR #80
+            LD (SCRBASE),A
+            LD HL,&0000
+            CALL PAGESWP  ;CALL MC_SCREEN_OFFSET
+
+
+            JR LOOP
+
+DO_CONWAY:
+            ;Update the matrix with Conway Rules
+            LD      HL,256 * (COLS - 1) + (ROWS - 1)
+CLOOP:
+            LD (CURCURSOR),HL
+
+            CALL SETCUR
+            CALL GETCHAR
+            LD D,A   ;Current cell
+            LD HL,(CURCURSOR)
+
+
+            LD B,#00 ;Counter
+            ;Look UP - Left
+LOOK_UL:
+            DEC L
+            DEC H
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_UC
+            INC B
+LOOK_UC:
+            LD HL,(CURCURSOR)
+            DEC L
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_UR
+            INC B
+LOOK_UR:
+            LD HL,(CURCURSOR)
+            DEC L
+            INC H
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_CL
+            INC B
+LOOK_CL:
+            LD HL,(CURCURSOR)
+            DEC H
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_CR
+            INC B
+LOOK_CR:
+            LD HL,(CURCURSOR)
+            INC H
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_LL
+            INC B
+LOOK_LL:
+            LD HL,(CURCURSOR)
+            INC L
+            DEC H
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_LC
+            INC B
+LOOK_LC:
+            LD HL,(CURCURSOR)
+            INC L
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,LOOK_LR
+            INC B
+LOOK_LR:
+            LD HL,(CURCURSOR)
+            INC L
+            INC H
+            CALL SETCUR
+            CALL GETCHAR
+            CP ALIVE
+            JR NZ,EVALUATE
+            INC B
+EVALUATE:
+            LD C,ALIVE  ;Alive
+            LD A,B 
+            CP #03    ;Check if 3 cells around
+            JR Z,STORECELL
+            LD C,DEAD
+            CP #02    ;Check if 2 cells around
+            JR NZ,STORECELL
+            LD A,D    ;Current cell
+            CP ALIVE
+            JR NZ,STORECELL
+            LD C,A
+
+STORECELL:
+            LD A,(SCRBASE)
+            PUSH AF
+            XOR #80
+            LD HL,#0000
+            CALL SCNBCK
+            LD HL,(CURCURSOR)
+            CALL SETCUR
+            LD A,C
+            CALL PRINT
+            POP AF
+            LD HL,#0000
+            CALL SCNBCK
+            LD HL,(CURCURSOR)
+            DEC L
+            LD A,L
+            DEC A
+            JP NZ,CLOOP
+            LD L,ROWS - 1
+            DEC H
+            LD A,H
+            DEC A
+            JP NZ,CLOOP
+
+            RET
+LOAD_CELLS:
+            LD HL,#140C
+            CALL SETCUR
+            CALL LC
+            LD HL,#130D
+            CALL SETCUR
+LC:
+            LD A,ALIVE
+            CALL PRINT
+            CALL PRINT
+            CALL PRINT
+            RET
+
+LOAD_RANDOM:
+            LD BC,256 * (ROWS - 1) + (COLS - 1)   ;25 Rows, 40 Columns
+S0:            
+            LD A,B
+            CALL SETROW
+S1:
+            LD A,C
+            CALL SETCOL
+
+            CALL RAND
+            JR C,LIVE
+            LD A,DEAD
+            JR S2
+LIVE:
+            LD A,ALIVE
+S2:
+            PUSH BC
+            CALL PRINT
+            POP BC
+            DEC C
+            LD A,C
+            DEC A
+            JR NZ,S1
+            LD C,COLS - 1
+            DEC B
+            LD A,B
+            DEC A
+            JR NZ,S0
+
+            RET
+
+;Random boolean value.  Carry flag set if true
+RAND:
+            PUSH    BC
+            LD      A,R         ;Random Number Generation
+            LD      B,A
+            RRCA                ;Multiply by 32
+            RRCA
+            RRCA
+            XOR     #1F
+            ADD     A,B
+            SBC     A,#FF
+            POP     BC
+            RRCA                ;Check bit 0 if set then make live
+            RET
+
+CURCURSOR:  DW #0000
