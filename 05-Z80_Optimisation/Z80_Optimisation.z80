@@ -1,0 +1,225 @@
+;Z80 Optimisation Tricks
+
+;Use LDIR to initialise memory locations
+;----------------------------------------
+;Task: Fill 16 sequential memory locations with 0
+
+DATA:       EQU     0800H   ;data location
+
+;Bad Way
+            XOR     A           ;Zero A
+            LD      (DATA),A    ;Save A
+            LD      (DATA+1),A  ;Save A
+            LD      (DATA+2),A  ;Save A
+            LD      (DATA+3),A  ;Save A
+            LD      (DATA+4),A  ;Save A
+            LD      (DATA+5),A  ;Save A
+            LD      (DATA+6),A  ;Save A
+            LD      (DATA+7),A  ;Save A
+            LD      (DATA+8),A  ;Save A
+            LD      (DATA+9),A  ;Save A
+            LD      (DATA+10),A ;Save A
+            LD      (DATA+11),A ;Save A
+            LD      (DATA+12),A ;Save A
+            LD      (DATA+13),A ;Save A
+            LD      (DATA+14),A ;Save A
+            LD      (DATA+15),A ;Save A
+;Good Way
+            XOR     A           ;Zero A
+            LD      HL,DATA     ;Point HL to Data
+            LD      DE,DATA+1   ;Point De to Data+1
+            LD      (HL),A      ;Initialise first value to 0
+            LD      BC,000FH    ;Load BC with 16
+            LDIR                ;Copy HL to DE, BC times
+
+
+;Call Fall through
+;------------------
+;Task: Use the last call routine to return back to parent call
+;
+;This example converts register A to 2 seven segment equivilant
+;Code will fall through CON_NIBBLE and return back to the parent call
+
+            LD      A,2FH       ;Load A with 2F
+            CALL    CON_A       ;Call Convert A
+            ;...
+            ;...
+            ;...
+
+CON_A:
+            PUSH    AF                  ;Save A to keep original value
+            RLCA                        ;Shift upper nibble to lower for masking
+            RLCA
+            RLCA
+            RLCA
+            CALL    CON_NIBBLE          ;Convert Lower nibble to segment hex
+            POP     AF                  ;Restore A
+CON_NIBBLE:
+            AND     0FH                 ;Only look at lower nibble for indexing
+            LD      DE,DISP_COD_TAB     ;Reference Segment convert table
+            ADD     A,E                 ;Index table with A
+            LD      E,A                 ;Update DE with index
+            LD      A,(DE)              ;Look up table
+            LD      (BC),A              ;Save it to display buffer
+            INC     BC                  ;Increment buffer location
+            RET
+
+;If CALL is followed by RET, use JP instead
+;-------------------------------------------
+;Task: When a subroutine is called preceding a RET, just use JP and RET can been
+;      removed
+
+            CALL    HEXDUMP    ;Output  xx,xx
+            ;...
+            ;...
+            ;...
+
+HEXDUMP:
+            CALL PRINT_BYTE    ;Prints xx
+            CALL PRINT_COMMA   ;Prints ,
+            JP   PRINT_BYTE    ;Prints xx and returns
+            ;RET  <- Not needed
+
+PRINT_BYTE:
+            ;...   ;Do something
+            ;...
+            RET   ;Exit
+
+PRINT_COMMA:
+            ;...   ;Do something
+            ;...
+            RET   ;Exit
+
+
+;Know your bits
+;---------------
+;Task: Only select buttons 0,4,8 and C
+
+;Long Way
+PLAYER:
+            IN      A,(01)      ;Read Key
+            JR      Z,PLAYER    ;No key pressed
+            CP      00H         ;Is it 0
+            JR      Z,ZERO      ;Jump to key handler
+            CP      04H         ;Is it 0
+            JR      Z,FOUR      ;Jump to key handler
+            CP      08H         ;Is it 0
+            JR      Z,EIGHT     ;Jump to key handler
+            CP      0CH         ;Is it 0
+            JR      Z,CEE       ;Jump to key handler
+            JR      PLAYER      ;
+
+;Better Way            
+PLAYER:
+            IN      A,(01)      ;Read Key
+            JR      Z,PLAYER    ;No key pressed
+            RRCA                ;Check for keys 0,4,8,C by shifting
+            RRCA                ;twice to the right..Clever!
+            CP      04H         ;Compare with 4 to see if valid key
+            JR      NC,PLAYER
+
+;Convert Hex to ASCII
+;---------------------
+;Task: Convert a hex value between 0 and F to its ASCII equivilant
+
+;Long Way
+            ;Register A contains the hex value
+            LD      HL,HEXTABLE ;Load HL with Hex reference table
+            ADD     A,L         ;Update A with base of hex refrence table
+            LD      L,A         ;Index L with A
+            LD      A,(HL)      ;Load A with ASCII value
+
+HEXTABLE:   DB      30H,31H,32H,33H,34H,35H,36H,37H  ;ASCII 0-7
+            DB      38H,39H,41H,42H,43H,44H,45H,46H  ;ASCII 8-F
+
+;Clever Way with no table lookup
+            ;Register A contains the hex value
+            ADD     A,90H       ;Add 90H to A
+            DAA                 ;Convert to decimal
+            ADC     A,40H       ;Add with carry 40H to A
+            DAA                 ;Convert to decimal
+
+            ;OR
+
+            CP      0AH         ;Check if over or above A to set carry flag
+            CCF                 ;Invert Carry flag
+            ADC     A,30H       ;Add with carry 30H to A
+            DAA                 ;Convert to decimal
+
+;Quick Tricks
+;-------------
+;Here are some quick tricks to make your code size smaller and quicker
+
+;Zero 0
+            LD      A,00H       ;Okay
+            XOR     A           ;Better
+
+;A = 0?
+            CP      00H         ;Okay
+            OR      A           ;Better
+
+;Increase a value in memory
+            LD      A,(VALUE)   ;Okay
+            INC     A
+            LD      (VALUE),A 
+
+            LD      HL,VALUE    ;Better
+            INC     (HL)
+
+;Store a value to HL
+            LD      A,42H       ;Okay
+            LD      (HL),A
+
+            LD      (HL),42H    ;Better
+
+;Assigning B and C
+            LD      B,40H       ;Okay
+            LD      C,7FH
+
+            LD      BC,407FH    ;Better
+
+;Using B as a loop counter
+            DEC     B           ;Okay
+            JR      NZ,LOOP
+
+            DJNZ    LOOP        ;Better
+
+;Is Bit 0 set?
+            BIT     0,A         ;Okay
+            JR      NZ,LOOP
+
+            RRA                 ;Better
+            JR      C,LOOP
+            
+;Is Bit 7 set?
+            BIT     7,A         ;Okay
+            JR      NZ,LOOP
+
+            RLA                 ;Better
+            JR      C,LOOP
+
+;Push/Pop to copy 16 bit registers
+            PUSH    BC          ;Okay
+            ;...
+            POP     BC
+            LD      D,B
+            LD      E,C             
+
+            PUSH    BC          ;Better
+            ;...
+            POP     DE
+
+;Time wasters that do nothing by create a delay
+            NOP                 ;8 T-States
+            NOP
+
+            INC     HL          ;12 T-States
+            DEC     HL
+
+            JR      $+2         ;12 T-States
+
+            PUSH    AF          ;21 T-States
+            POP     AF
+
+            EX      (SP),HL     ;38 T-States
+            EX      (SP),HL

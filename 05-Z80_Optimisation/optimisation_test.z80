@@ -1,0 +1,252 @@
+; Size Test for Z80 Optimisation
+;--------------------------------
+;
+; Here are most of the optimisation tricks that I used for the video
+; To change to optimised make IS_OPT = 1.  The optimised code is 
+; 115 bytes while the non optimised code is 192, This is small, but 
+; if you are trying to make the program fit in a 1k or 2k ROM, every
+; byte counts.
+;
+; Designed to be run on an Amstrad CPC 6128.
+; Use Retro Virtual Machine!
+
+            ORG     #9C40     ;40000 decimal
+
+;BIOS functions
+SETMODE     EQU     #BC0E     ;A=00,01,02; Sets the screen mode
+PRINT:      EQU     #BB5D     ;Print a character to the screen
+TIME:       EQU     #B8B4     ;Time is milli seconds
+
+DATA:       EQU     #A7F8     ;data location for sometests
+
+;Uncomment/Comment one of these labels to select which type
+;of run you are doing.
+;IS_OPT: EQU 0                 ;Set for non optimised run
+IS_OPT: EQU 1                 ;Set for optimised run
+
+;Set the initial mode and cleer the screen
+            LD      A,#01     ;Mode 1
+            CALL    SETMODE   ;Set Mode
+
+            LD      BC,#02FF  ;Do 2FF times
+MAINLOOP:
+            PUSH    BC        ;Save BC for later
+
+;Use LDIR to initialise memeory locations
+if IS_OPT
+            XOR     A           ;Zero A
+            LD      HL,DATA     ;Point HL to Data
+            LD      DE,DATA+1   ;Point De to Data+1
+            LD      (HL),A      ;Initialise first value to 0
+            LD      BC,#000F    ;Load BC with 16
+            LDIR                ;Copy HL to DE, BC times
+else
+            XOR     A           ;Zero A
+            LD      (DATA),A    ;Save A
+            LD      (DATA+1),A  ;Save A
+            LD      (DATA+2),A  ;Save A
+            LD      (DATA+3),A  ;Save A
+            LD      (DATA+4),A  ;Save A
+            LD      (DATA+5),A  ;Save A
+            LD      (DATA+6),A  ;Save A
+            LD      (DATA+7),A  ;Save A
+            LD      (DATA+8),A  ;Save A
+            LD      (DATA+9),A  ;Save A
+            LD      (DATA+10),A ;Save A
+            LD      (DATA+11),A ;Save A
+            LD      (DATA+12),A ;Save A
+            LD      (DATA+13),A ;Save A
+            LD      (DATA+14),A ;Save A
+            LD      (DATA+15),A ;Save A
+endif
+
+;Use JP instead of CALL/Return
+            CALL    HEXDUMP    ;Output  xx,xx
+            NOP                ;Do something
+            NOP                ;Do something
+            JR      CONTINUE   ;Exit
+if IS_OPT
+HEXDUMP:
+            CALL PRINT_BYTE    ;Prints xx
+            CALL PRINT_COMMA   ;Prints ,
+            CALL PRINT_BYTE    ;Prints xx and returns
+            RET                ;Exit
+else
+HEXDUMP:
+            CALL PRINT_BYTE    ;Prints xx
+            CALL PRINT_COMMA   ;Prints ,
+            JP   PRINT_BYTE    ;Prints xx and returns
+            ;RET  <- Not needed
+endif
+
+PRINT_BYTE:
+            NOP                ;Do something
+            NOP                ;Do something
+            RET                ;Exit
+
+PRINT_COMMA:
+            NOP                ;Do something
+            NOP                ;Do something
+            RET                ;Exit
+
+CONTINUE:
+
+
+
+;Bit Selection trick for keyboard read (or anything else that applies)
+if IS_OPT
+KEYPRESS:
+            LD      A,#0C       ;Read Key (assume 'C' is pressed)
+            JR      NZ,KEYPRESS ;No key pressed
+            RRCA                ;Check for keys 0,4,8,C by shifting
+            RRCA                ;twice to the right..Clever!
+            CP      #04         ;Compare with 4 to see if valid key
+            JR      NC,KEYPRESS
+else
+KEYPRESS:
+            LD      A,#0C       ;Read Key (assume 'C' is pressed)
+            JR      NZ,KEYPRESS ;No key pressed
+            CP      #00         ;Is it 0
+            JR      Z,EXIT1     ;Jump to key handler
+            CP      #04         ;Is it 0
+            JR      Z,EXIT1     ;Jump to key handler
+            CP      #08         ;Is it 0
+            JR      Z,EXIT1     ;Jump to key handler
+            CP      #0C         ;Is it 0
+            JR      Z,EXIT1     ;Jump to key handler
+            JR      KEYPRESS    ;
+EXIT1:
+endif
+
+;HEX to ASCII convertion
+            LD      A,#0D     ;Load A with 0D to convert to 44 Ascii
+DO_ASCII:                     ;Label for actual calling below
+if IS_OPT
+            CP      10        ;Is it over or under 10?
+            CCF               ;Invert carry flag
+            ADC     A,#30     ;Add 30 hex to A
+            DAA               ;Adjust for decimal
+else
+            LD      HL,HEXTABLE ;Load HL with Hex reference table
+            ADD     A,L         ;Update A with base of hex refrence table
+            LD      L,A         ;Index L with A
+            LD      A,(HL)      ;Load A with ASCII value
+            JR      EXIT2
+
+HEXTABLE:   DB      #30,#31,#32,#33,#34,#35,#36,#37  ;ASCII 0-7
+            DB      #38,#39,#41,#42,#43,#44,#45,#46  ;ASCII 8-F
+EXIT2:
+endif
+
+;Zero A register
+if IS_OPT
+            XOR     A         ;Zero A register
+else
+            LD      A,#00     ;Zero A register
+endif
+
+;Zero A register
+if IS_OPT
+            OR      A         ;Is A equal to zero?
+else
+            CP      #00       ;Is A equal to zero?
+endif
+
+;Increasing a value in memory using HL
+if IS_OPT
+            LD      HL,#A7F8  ;Load HL with memory location
+            INC     (HL)      ;Increase the value pointing to HL
+else
+            LD      A,(#A7F8) ;Load A with the contents of #A7F8
+            INC     A         ;Increment A
+            LD      (#A7F8),A ;Save A to #A7F8
+endif
+
+;Storing a value to HL
+if IS_OPT
+            LD      (HL),#42  ;Load 42 directly in HL
+else
+            LD      A,#42     ;Load A with 42
+            LD      (HL),A    ;Save to HL
+endif
+
+;B and C register setting
+if IS_OPT
+            LD      BC,#407F  ;Set BC in one go
+else
+            LD      B,#40     ;Set B to 40
+            LD      C,#7F     ;Set C to 7F
+endif
+
+;Using B register as a loop counter
+            LD      B,#00     ;Set B to zero for full byte loop
+if IS_OPT
+BLOOP:
+            DJNZ    BLOOP     ;Use DJNZ to decrease loop
+else
+BLOOP:
+            DEC     B         ;Decrease B
+            JR      NZ,BLOOP  ;repeat loop if B is non zero
+endif
+
+
+LOOP:      ;Dummy label used to make compiler happy
+;Is Bit 0 set
+            LD      A,0       ;Set A to have all bits 0
+if IS_OPT
+            RRA               ;Rotate register A bits to the right
+            JR      C,LOOP    ;If Bit 0 set, jump
+else
+            BIT     0,A       ;Check if bit 0 is set
+            JR      C,LOOP    ;If Bit 0 set, jump
+endif
+
+;Is Bit 7 set
+            LD      A,0       ;Set A to have all bits 0
+if IS_OPT
+            RLA               ;Rotate register A bits to the left
+            JR      C,LOOP    ;If Bit 0 set, jump
+else
+            BIT     7,A       ;Check if bit 7 is set
+            JR      C,LOOP    ;If Bit 0 set, jump
+endif
+
+;Push/Pop to copy 16 bit registers
+if IS_OPT
+            PUSH    BC        ;Save BC
+            NOP               ;Do someting
+            NOP               ;here
+            POP     DE        ;Pop BC into DE (copy BC to DE)
+else
+            PUSH    BC        ;Save BC
+            NOP               ;Do someting
+            NOP               ;here
+            POP     BC        ;Restore BC
+            LD      D,B       ;Load B to D
+            LD      E,C       ;Load C to E
+endif
+
+;Time wasters.  Just here to show that they work.  They are executed
+;regardless of type or run.
+            NOP               ;Do nothing
+            NOP               ;Do nothing
+            INC     HL        ;Do nothing
+            DEC     HL        ;Do nothing
+            JR      $+2       ;Do nothing
+            PUSH    AF        ;Do nothing
+            POP     AF        ;Do nothing
+            EX      (SP),HL   ;Do nothing
+            EX      (SP),HL   ;Do nothing
+
+
+;End if loop, Display progress indicator
+            LD      A,#E9     ;Active indicator            
+            CALL    PRINT     ;Print loop status indicator    
+            POP     BC        ;Restore B for outer loop
+
+            DEC BC            ;Decrease BC
+            LD A,C            ;Check if
+            OR B              ;B and C are both zero
+            JP NZ,MAINLOOP    ;No, loop again
+
+            RET               ;Exit to Basic
