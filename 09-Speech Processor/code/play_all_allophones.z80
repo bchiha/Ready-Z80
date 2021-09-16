@@ -1,0 +1,52 @@
+; Play all Allophones on the SPO256-AL2 Chip
+; ------------------------------------------
+;
+; This program cycles through all Allophones.  It plays the Allophone twice with
+; pauses between each Allophone then the next one is played.  Once all Allophones
+; are played, it waits for a key press, then repeats
+;
+; This program is designed for the TEC (Talking Electroincis) Z80 Single board computer
+; with the Speech Add-on.  The Add on is connected to Port 5 of the output decoder.
+; Note: First five allophones are pauses (no sound)
+;
+;Constants
+PORT:       EQU     05H            ;Output Port '5' Change is necessary to your setup
+ALLOPHONES: EQU     40H            ;Total Allophones on Chip (64 Decimal)
+
+            ORG     0900H   
+
+; ------------------
+; Play all Allophone 
+; ------------------
+;
+START:
+            ;Start of routine
+            LD      B,ALLOPHONES   ;Load B with total allophones to play
+            XOR     A              ;Zero A
+
+DO_OUT:
+            
+            CALL    OUTPUT         ;Output Allophone and Delay
+            CALL    OUTPUT         ;Output Allophone and Delay
+
+            INC     A              ;Next Allophone
+            DJNZ    DO_OUT         ;Jump to output until B=0
+
+            HALT                   ;Read Keyboard and loop until a key pressed
+            ;All Done, Repeat from start
+            JR      START          ;Go to the start
+
+OUTPUT:                            ;Output with delay
+            OUT     (PORT),A       ;Send Allophone out to Speech Chip
+            ;Delay
+            LD      D,0FFH         ;Load D with FF
+D1:                   
+            LD      E,0FFH         ;Load E with FF 
+D2:                  
+            DEC     E              ;Decrease E
+            JR      NZ,D2          ;Loop until E is zero
+            DEC     D              ;Decrease D
+            JR      NZ,D1          ;Loop until D is zero
+            RET                    ;Exit
+
+

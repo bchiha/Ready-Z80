@@ -1,0 +1,67 @@
+; Play an English sentence the SPO256-AL2 Chip
+; --------------------------------------------
+;
+; This program interates through a list of Allophones and outputs them to the SP0256-AL2 chip
+; Once all Allophones are sent (terminated by 0FFH, it waits for kay press, then repeats.
+;
+; This program is designed for the TEC (Talking Electroincis) Z80 Single board computer
+; with the Speech Add-on.  The Add on is connected to Port 5 of the output decoder.
+;
+;Constants
+PORT:       EQU     05H            ;Output Port '5' Change is necessary to your setup
+
+            ORG     0900H   
+
+; ------------------------
+; Play a list of Allophone 
+; ------------------------
+;
+START:
+            ;Start of routine
+            LD      HL,ALLOPHONES  ;Load HL with the start of the Allophone list
+            LD      BC,((END_ALLO - ALLOPHONES) * 256) + PORT ;Load BC with total allophones and port
+
+            ;Do the Outputting
+            OTIR                   ;Output Contents of HL, to port C, B times
+
+            HALT                   ;Wait for key
+            JR      START          ;Repeat outputing.
+
+
+ALLOPHONES:  ;Sample output, modify to create your own!
+            DB     0DH,17H,17H,02H,2AH,0CH,2CH,04H
+            DB     04H,2AH,0FH,10H,00H,31H,16H,0DH
+            DB     33H,04H,04H,00H,00H,00H,00H,00H
+            DB     1BH,07H,2DH,35H,00H,36H,07H,2FH
+            DB     04H,06H,00H,1AH,10H,00H,12H,13H
+            DB     00H,0DH,13H,03H,13H,03H,37H,13H
+            DB     03H,08H,18H,10H,09H,31H,16H,11H
+            DB     33H,04H,04H,04H,38H,20H,00H,30H
+            DB     0CH,1DH,37H,09H,13H,32H,04H
+END_ALLO:  ;Must have end label to work out size of Allophone list at runtime
+
+;Original Code below.  Above code is optimised
+;Play a series of Allophones to the SP0256-AL2 Chip
+;PORT 05H
+;
+;START:
+;    LD  HL,DATA   ;Load HL with start of Data Table
+;LOOP:
+;    LD  A,(HL)    ;Load A with contents of HL
+;    CP  0FFH      ;Is it FF?
+;    JR  Z,WAIT    ;Yes, Jump for key press
+;    OUT (PORT),A  ;Output to SP0256-AL chip
+;    INC HL        ;Move to next Allophone
+;    JR  LOOP      ;Loop output again
+;WAIT:
+;    HALT          ;Wait for key press
+;    JR  START     ;Repeat from start
+;DATA:
+;    DB  0DH,17H,17H,02H,2AH,0CH,2CH,04H ;Talking Electroinics
+;    DB  04H,2AH,0FH,10H,00H,31H,16H,0DH
+;    DB  33H,04H,04H,0FFH
+
+
+
+
+

@@ -1,0 +1,44 @@
+; Play some music (kind of) on the SPO256-AL2 Chip
+; -------------------------------------------------
+;
+; This program interates through a list of Allophones and outputs them to the SP0256-AL2 chip
+; Once all Allophones are sent (terminated by 0FFH, it waits for kay press, then repeats.
+;
+; This program is designed for the TEC (Talking Electroincis) Z80 Single board computer
+; with the Speech Add-on.  The Add on is connected to Port 5 of the output decoder.
+;
+;Constants
+PORT:       EQU     05H            ;Output Port '5' Change is necessary to your setup
+
+            ORG     0900H   
+
+; ------------------------
+; Play a list of Allophone 
+; ------------------------
+;
+START:
+            ;Start of routine
+            LD      HL,ALLOPHONES  ;Load HL with the start of the Allophone list
+            LD      BC,((END_ALLO - ALLOPHONES) * 256) + PORT ;Load BC with total allophones and port
+
+            ;Do the Outputting
+            OTIR                   ;Output Contents of HL, to port C, B times
+
+            HALT                   ;Wait for key
+            JR      START          ;Repeat outputing.
+
+
+ALLOPHONES:  ;Sample output, modify to create your own!
+            DB      0DH,03H,32H,03H,0DH,03H,32H,03H  ;Tic Toc
+            DB      0DH,03H,32H,03H,0DH,03H,32H,03H 
+
+            DB      2CH,03H,1CH,03H,2CH,2CH,03H,1CH  ;Beat
+            DB      03H,2CH,2CH,03H,1CH,03H,2CH,2CH
+            DB      03H,1CH,03H,2CH
+
+            DB      05H,03H,06H,03H,3BH,03H,31H,03H  ;Scroll
+            DB      31H,03H,3BH,03H,06H,03H,05H,03H
+            DB      05H,03H,06H,03H,3BH,03H,31H,03H
+            DB      31H,03H,3BH,03H,06H,03H,05H,03H
+          
+END_ALLO:  ;Must have end label to work out size of Allophone list at runtime
