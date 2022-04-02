@@ -1,0 +1,40 @@
+# File /Users/slarti/Documents/Ready-Z80/11-TEC_1F/TEC1F-demo.z80
+0000			;Ready Z80 TEC-1F Demo 
+0000			; 
+0000			;Modification of Boomerang Program in issue 14 Page 14 of the Talking Electronics Magazine 
+0000			 
+0000			            ORG     0900H                        ;Start at address 0x0900 
+0900			START: 
+0900 21 14 09		            LD      HL,TABLE                     ;Load HL with base of data table 
+0903 06 12		            LD      B,012H                       ;0x12 Double Entries in table 
+0905			LOOP1: 
+0905 7e			            LD      A,(HL)                       ;Load First entry of table (segment on) 
+0906 d3 01		            OUT     (01),A                       ;Turn on segment 
+0908 23			            INC     HL                           ;Move to second entry  
+0909 7e			            LD      A,(HL)                       ;Load Second entry of table (segments alight) 
+090a d3 02		            OUT     (02),A                       ;Illuminate Segments 
+090c 23			            INC     HL                           ;Move to next double entry 
+090d cd 38 09		            CALL    DELAY                        ;Call a small delay 
+0910 10 f3		            DJNZ    LOOP1                        ;Loop back until all 0x12 entries are displayed 
+0912 18 ec		            JR      START                        ;Repeat 
+0914			TABLE: 
+0914			            ;2 bytes per entry, first byte is which segment to turn on 
+0914			            ;and second byte is what LEDS in that segment to turn on 
+0914 01 09 02 03 04 06 08 0c	            DB      01H, 09H, 02H, 03H, 04H, 06H, 08H, 0CH  
+091c 10 09 20 03 20 c0 10 a0	            DB      10H, 09H, 20H, 03H, 20H,0C0H, 10H,0A0H 
+0924 08 24 04 44 02 c0 01 a0	            DB      08H, 24H, 04H, 44H, 02H,0C0H, 01H,0A0H 
+092c 20 44 10 c7 08 6f 04 ec	            DB      20H, 44H, 10H,0C7H, 08H, 6FH, 04H,0ECH 
+0934 02 ef 01 eb	            DB      02H,0EFH, 01H,0EBH 
+0938			DELAY:                
+0938 c5			            PUSH    BC                           ;Save BC 
+0939 06 55		            LD      B,55H                        ;Load B with 0x55 
+093b			D1:                   
+093b 0e ff		            LD      C,0FFH                       ;Load C with 0xFF 
+093d			D2:                   
+093d 0d			            DEC     C                            ;Decrease C 
+093e 20 fd		            JR      NZ,D2                        ;Until its zero 
+0940 10 f9		            DJNZ    D1                           ;Decrease B until zero 
+0942 c1			            POP     BC                           ;Restore BC 
+0943 c9			            RET                                  ;Return
+# End of file /Users/slarti/Documents/Ready-Z80/11-TEC_1F/TEC1F-demo.z80
+0944

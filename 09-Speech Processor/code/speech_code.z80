@@ -1,0 +1,21 @@
+;SPEECH MODULE using the SP0256A-AL2 speech chip.
+;Allophones tester.
+;
+;Put strobe of Speech board in Port 5, or whatever.
+;Load code and put data for SPO256A-AL2 from 0910 onwards.
+;Use FF to terminate and repeat
+
+SPPORT:    EQU    05H
+           ORG    0900H 
+START:               
+           LD     HL,0910H
+S1:
+           LD     A,(HL)
+           CP     0FFH
+           JR     Z,END
+           OUT    (SPPORT),A
+           INC    HL
+           JR     S1
+END:
+           RST    08H
+           JR     START

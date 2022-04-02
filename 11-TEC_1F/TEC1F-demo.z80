@@ -1,0 +1,37 @@
+;Ready Z80 TEC-1F Demo
+;
+;Modification of Boomerang Program in issue 14 Page 14 of the Talking Electronics Magazine
+
+            ORG     0900H                        ;Start at address 0x0900
+START:
+            LD      HL,TABLE                     ;Load HL with base of data table
+            LD      B,012H                       ;0x12 Double Entries in table
+LOOP1:
+            LD      A,(HL)                       ;Load First entry of table (segment on)
+            OUT     (01),A                       ;Turn on segment
+            INC     HL                           ;Move to second entry 
+            LD      A,(HL)                       ;Load Second entry of table (segments alight)
+            OUT     (02),A                       ;Illuminate Segments
+            INC     HL                           ;Move to next double entry
+            CALL    DELAY                        ;Call a small delay
+            DJNZ    LOOP1                        ;Loop back until all 0x12 entries are displayed
+            JR      START                        ;Repeat
+TABLE:
+            ;2 bytes per entry, first byte is which segment to turn on
+            ;and second byte is what LEDS in that segment to turn on
+            DB      01H, 09H, 02H, 03H, 04H, 06H, 08H, 0CH 
+            DB      10H, 09H, 20H, 03H, 20H,0C0H, 10H,0A0H
+            DB      08H, 24H, 04H, 44H, 02H,0C0H, 01H,0A0H
+            DB      20H, 44H, 10H,0C7H, 08H, 6FH, 04H,0ECH
+            DB      02H,0EFH, 01H,0EBH
+DELAY:               
+            PUSH    BC                           ;Save BC
+            LD      B,55H                        ;Load B with 0x55
+D1:                  
+            LD      C,0FFH                       ;Load C with 0xFF
+D2:                  
+            DEC     C                            ;Decrease C
+            JR      NZ,D2                        ;Until its zero
+            DJNZ    D1                           ;Decrease B until zero
+            POP     BC                           ;Restore BC
+            RET                                  ;Return
