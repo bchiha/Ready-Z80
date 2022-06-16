@@ -1,0 +1,254 @@
+;--------------------------------------------------------------
+; This file contains examples code to demonstrate the process
+; of Seven Segment Multiplexing on a Z80 computer.
+;
+; Typically the Seven Segments, usually six of them are connected
+; together in series where all LED pins A to DP are connected to
+; eachother and they are connected to one Latch chip (LED Segment).
+; The common Cathode/Anode pins are individually connected to a
+; transistor/resistor switch and these are connected to another
+; latch chip (On/Off).  The latch chips are connected to a unique
+; port number on the Z80.  Data is then sent to the LED Segment
+; latch and the Segment On/Off latch.  This will turn on one or 
+; more segments and light up on or more LEDs.
+;
+; This set up looks limiting as the same LED's segments will light up
+; on one or more segment displays.  By Multiplexing these segments, an
+; illusion is created by displaying different LED's segments on 
+; different segment displays.  This is achived by only turning on
+; one display at a time, lighting up the LED's you desire and then
+; turning it off.  This is repeated for all the segments.  If this 
+; happens fast enough, the user will just see all segments on displaying
+; different LED's.
+;
+; Multiplexing occurs in code, and these examples work towards acheiving
+; this effect.
+;-----------------------------------------------------------------
+
+; This code is designed for the TEC-1 Z80 computer.  But can be used
+; on other Z80 Single Board Computer.  Just change the port numbers.
+; The TEC-1 uses 6 Common Cathode Seven Segment displays.  The data
+; to send the othe LED's may differ on your system.  It just depends
+; how D0-D7 are connected to A-DP on the seven segments
+; To help with working out what data to send this
+; https://slartibartfastbb.itch.io/seven-segment-calculator
+;
+; Port numbers, DSCAN turns the segments ON or OFF and DSEGMENT turns
+; LED Segements A to DP on or off
+DSCAN:      EQU     0x01               ;DISPLAY CATHODE DRIVER LATCH
+DSEGMENT:   EQU     0x02               ;DISPLAY SEGMENT DRIVER LATCH
+
+            ORG     2000H
+;
+; Example 1.
+; ----------
+; Turn on segments displaying the letter 'A'.  This confirms how the 
+; segments are connected as only the charcter 'A' can be shown and it
+; will be displayed on segments 1,2,5 and 6 only
+;
+EX1:
+            LD      A,6FH              ;Light up Segments A,B,C,E,F and G
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,33H              ;Turn on Segments 1,2 and 5,6
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+            HALT                       ;Wait for key press
+
+;
+; Example 2.
+; ----------
+; Turn on Segments 1 and 2 individually and display the letters 'A' and 'C'
+; This is a hard coded way to display two individual characters to simulate
+; Multiplexing.  This example doesn't work, the segments are switching too
+; fast. In order for this to work, Segments need to be scanned continually.
+EX2:
+            LD      A,6FH              ;Light up Segments A,B,C,E,F and G
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,02H              ;Turn on Segment 2
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+            LD      A,0C3H             ;Light up Segments A,D,E and F
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,01H              ;Turn on Segment 1
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+            JR      EX2                ;Repeat
+
+;
+; Example 3.
+; ----------
+; This is an improved version of Example 2.  In Example two switching is 
+; occuring too fast there was ghosting.  A Cleaner way to display segments
+; is to turn off the segment after it has been displayed and put a delay.
+; to keep the display on for longer.
+EX3:
+            LD      A,6FH              ;Light up Segments A,B,C,E,F and G
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,02H              ;Turn on Segment 2
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX3D1:      DJNZ    EX3D1              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            LD      A,0C3H             ;Light up Segments A,D,E and F
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,01H              ;Turn on Segment 1
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX3D2:      DJNZ    EX3D2              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            JR      EX3                ;Repeat
+
+;
+; Example 4.
+; ----------
+; Now we have the basic of Multiplexing, let light up all six segments
+; With a differnt character on each display.  This is a brute force
+; way with all data hard coded.  It's not ideal, don't program like this!!
+; EX4 dispays the letters AbCdEF
+EX4:
+            LD      A,6FH              ;Display 'A'
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,20H              ;Turn on Segment 6
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX4D1:      DJNZ    EX4D1              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            LD      A,0E6H             ;Display 'B'
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,10H              ;Turn on Segment 5
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX4D2:      DJNZ    EX4D2              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            LD      A,0C3H             ;Display 'C'
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,08H              ;Turn on Segment 4
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX4D3:      DJNZ    EX4D3              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            LD      A,0ECH             ;Display 'D'
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,04H              ;Turn on Segment 3
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX4D4:      DJNZ    EX4D4              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            LD      A,0C7H             ;Display 'E'
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,02H              ;Turn on Segment 2
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX4D5:      DJNZ    EX4D5              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            LD      A,47H              ;Display 'F'
+            OUT     (DSEGMENT),A       ;Send it to LED Segments Latch
+            LD      A,01H              ;Turn on Segment 1
+            OUT     (DSCAN),A          ;Send it to ON/OFF Segment Latch
+
+            LD      B,00H              ;Load B with a full byte delay
+EX4D6:      DJNZ    EX4D6              ;Delay
+
+            XOR     A                  ;Select no Segments
+            OUT     (DSCAN),A          ;Turn off Segments
+
+            JR      EX4                ;Repeat
+
+;
+; Example 5.
+; ----------
+; Example 4 worked but hard coded and very long.  A much better ways to 
+; Multiplex is to reference an area in memeory where the data for the 
+; segments are and use the clever bit rotation to select the segment
+; to turn on and off.  If you noticed the six segments on/off bits are
+; 0x20, 0x10, 0x08, 0x04, 0x02, 0x01.  This is just a bit shift to the 
+; right to go from 0x20 to 0x01.  This example is the most efficient 
+; way to scan the segments and make the segments variable.
+EX5:                                    
+            LD      B,20H               ;Segment Reference
+            LD      HL,DISP_BUFF        ;Set HL to Display Buffer
+SCAN_LOOP:
+            LD      A,(HL)              ;Get Segment Value at HL
+            OUT     (DSEGMENT),A        ;Set on Segment
+            LD      A,B                 ;Get Segment reference
+            OUT     (DSCAN),A           ;Activate segment
+            LD      B,80H               ;Segment delay
+D_LOOP:     DJNZ    D_LOOP
+            LD      B,A                 ;Save Segment reference
+            XOR     A                   ;Clear A
+            OUT     (DSCAN),A           ;Deactivate Segment
+            INC     HL                  ;move to next location
+            RRC     B                   ;Move Segment Reference on to the Right
+            JR      NC,SCAN_LOOP        ;If not passed the last segment, scan next segment
+            JR      EX5                 ;Repeat
+
+DISP_BUFF:  DB      6BH, 42H, 0C3H, 0C7H, 04H, 28H  ;NICE-1
+
+;
+; Example 6.
+; ----------
+; This Example combines Multiplexing the Seven Segment Display and
+; another display at the same time.  The other display that I use is
+; a 8x8 LED Matrix.  It is connected the same way as the segments, 
+; one output latch to control the ROWs and antoher to control the 
+; COLUMNS.  The Small change here is that the 8x8 has eight ROWs
+; while the Seven Segments are six in total.  On the Segments for 
+; the TEC, Bit 6 is not connected and Bit 7 is connected to the 
+; speaker.  On the TEC-1F Bit 6 is connected to the serial TX line
+; For this I scan from the segments from Right to Left and on the
+; last scan, I skip the segment update, so not to turn on the speaker.
+; Because I am scaning from Right to Left, the segment data is to be
+; printed backwards.  
+EX6:                
+            LD      B,01H               ;Scan Counter starts on the Right
+            LD      DE,DISP_BUFF+5      ;Data for the Seven Segments (end)
+            LD      HL,LED8x8_BUFF      ;Data for the 8x8
+S2:               
+            LD      A,(HL)              ;Get 8x8 data
+            OUT     (06),A              ;Output Rows
+            LD      A,(DE)              ;Get Segment data
+            OUT     (02),A              ;Oupput the LED segment
+            LD      A,B                 ;Load Scan Port
+            OUT     (05),A              ;Turn on 8x8 Column
+            CP      80H                 ;If port 80 (Speaker), Skip
+            JR      Z,S3                
+            OUT     (01),A              ;Turn on Segment display
+S3:
+            LD      B,40H               ;Delay to keep LED's on 
+S4:         DJNZ    S4 
+            LD      B,A                 ;Save Scan Port
+            XOR     A                   ;Clear A
+            OUT     (05),A              ;Blank out 8x8
+            OUT     (01),A              ;Blnak out Segments
+            DEC     DE                  ;Move segment data back one                                  
+            INC     HL                  ;Move 8x8 data forward
+            RLC     B                   ;Move to next segment to the left
+            JR      NC,S2               ;If more segments to do, repeat
+            JR      EX6      
+
+LED8x8_BUFF: DB     08H,08H,0EBH,0FCH,0EAH,09H,04H,00H  ;Boogie
