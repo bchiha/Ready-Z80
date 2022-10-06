@@ -1,0 +1,394 @@
+;LCD Particle Simulation
+;-----------------------
+;The Code should be straight forward to follow.  It can be adapted to your own Z80
+;by changing some of the constants below.
+
+;NOTE: RST 30H on BMON does a check for LCD Busy.  Here is the code. Replace RST 30
+;with the following if not using BMON.
+; IE: do a 'CALL RST30'
+
+;RST 30 (F7)
+;TEST THE BUSY STATE OF THE LCD AND LOOP WHILE BUSY
+; RST30:      IN      A, (LCD_IR)                         ;READ STATUS BIT FROM LCD
+;             RLCA                                        ;PUT IN CARRY
+;             JR      C, RST30                            ;LOOP IF LCD BUSY
+;             RET                                         ;DONE
+
+
+            ORG    2000H
+
+;Port 4 on TEC is connected to LCD Enable
+;A7 is connected to  Register select.  A7=0 for Instruction, A7=1 for Data
+LCD_IR:     EQU    00000100B
+LCD_DR:     EQU    10000100B ;A7 is Data Register
+LCDOFF:     EQU    3F21H
+BALLLST:    EQU    3D00H     ;Active Balls in RAM
+ROW1:       EQU    80H       ;LCD DDRAM Row 1 Start Address
+ROW2:       EQU    0C0H      ;LCD DDRAM Row 2 Start Address
+ROW3:       EQU    94H       ;LCD DDRAM Row 3 Start Address
+ROW4:       EQU    0D4H      ;LCD DDRAM Row 4 Start Address
+MAXCOL:     EQU    100       ;Max Columns
+MAXROW:     EQU    32        ;Max Rows
+BALL:       EQU    6FH       ;Ball shape 'o'
+
+START:
+            ; BMON config
+            LD     A,0FFH
+            LD     (LCDOFF),A       ;Disables LCD update from BMON.  Ignore if not using BMON
+
+            ; LCD set up
+            RST    30H              ;Check for LCD Busy
+            LD     A,01H            ;Display Clear
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+            RST    30H              ;Check for LCD Busy
+            LD     A,06H            ;Increment Cursor from Left to Right
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+            RST    30H              ;Check for LCD Busy
+
+            ; Load Any Customer LCD Characters
+            CALL   LOADCHARS
+
+LOADBALLS:
+            ;Load Default Balls to RAM
+            LD     HL,BALLS         ;Get Ball Data
+            LD     DE,BALLLST       ;Get Ball RAM address
+L1:
+            LDI
+            LD     A,(HL)           ;Check for 
+            CP     0FFH             ;End of List
+            JR     NZ,L1
+            LD     (DE),A           ;Save FF
+
+;DRAW/MOVE Loop.
+;Graphical engines have a Draw/Move cycle.  Draw the Screen, and Move the data for the screen.
+;Also do a keyboard check if needed in the Move.  This is fairly typical.
+DRAW:
+            LD     HL,BALLLST       ;Get Ball list
+D1:
+            LD     B,(HL)           ;Load Position X and Positino Y into BC
+            INC    HL
+            LD     C,(HL)
+
+            INC    HL
+            INC    HL
+            INC    HL
+            INC    HL
+            INC    HL
+            LD     D,(HL)           ;Load Ball ASCII character into D
+            CALL   DRAWLCD          ;Draw Ball on LCD
+
+            INC    HL               ;Move to next Ball
+            LD     A,(HL)
+            CP     0FFH             ;End of List
+            JR     NZ,D1
+
+;Ball Automatic Movement with Velocity.  Use IX regitster to easlier index Ball Table
+;IX+0 = Pos X, IX+1 = Pox Y, IX+2 = Vel X, IX+3 = Vel Y, IX+4 = Accel, IX+5 = Accel Timer
+
+MOVE:
+            LD     IX,BALLLST       ;Link IX to Ball List
+M1:
+            LD     A,(IX+0)         ;Check if End of List
+            CP     0FFH             ;
+            JR     Z,DRAW           ;Yes, Move is over, Loop Back to Draw
+            ;Decrease Timer, if zero, add velocity to position
+            LD     A,(IX+5)         ;Get Accelleration Timer
+            OR     A                ;Is it zero?
+            JR     Z,M3             ;Yes, Add Velocity, reset timer
+            DEC    (IX+5)           ;Decrease Timer
+            JR     SKIPMOVE         ;No Blanking needed as Ball didn't move
+M2:         ;Clear Prevous Ball, Move IX to next Ball and process next ball    
+            PUSH   DE               ;Copy DE into
+            POP    BC               ;BC
+            LD     D,20H            ;Load D as Space
+            CALL   DRAWLCD          ;Clear out previous square
+            CALL   COLLISION        ;A Ball has moved, check for Ball Collisions
+
+SKIPMOVE:
+            LD     BC,07H           ;Next Ball Index
+            ADD    IX,BC            ;Move IX to next Ball
+            JR     M1               ;Process Next Ball
+M3:         ;Add Velocity to Ball Position. If out of Bounds, reverse velocity, reset timer
+            ;Update X Position
+            LD     A,(IX+2)         ;Get Velocity X
+            SUB    04H              ;Normalise Velocity
+            LD     B,A              ;Save in B
+            LD     A,(IX+0)         ;Get Position X
+            ADD    A,B              ;Update Position X
+            JR     Z,M4             ;Zero, Invert X
+            JP     P,M5             ;Not Negative, Check for carry
+M4:         ;Invert X Velocity to Bounce off Wall
+            LD     A,(IX+2)         ;Get Velocity X
+            NEG                     ;Get 2s Compliment
+            AND    07H              ;Mask out irrelevant bits
+            LD     (IX+2),A         ;Store updated X Velocity
+            JR     M3               ;Try Move Again
+M5:         ;Check to see if X > MAXCOL
+            CP     MAXCOL           ;Is it Greater than 
+            JR     C,M6             ;MAX COL, No if Carry Set        
+            JR     NZ,M4            ;Or Zero Set 
+M6:         ;All Good, update X Pos
+            LD     D,(IX+0)         ;Save Previous X Pos
+            LD     (IX+0),A         ;Save New Pos X
+M7:         ;Update Y Position
+            LD     A,(IX+3)         ;Get Velocity Y
+            SUB    04H              ;Normalise Velocity
+            LD     B,A              ;Save in B
+            LD     A,(IX+1)         ;Get Position Y
+            ADD    A,B              ;Update Position Y
+            JR     Z,M8             ;Zero, Invert Y
+            JP     P,M9             ;Not Negative, Check for carry
+M8:         ;Invert Y Velocity to Bounce off Wall
+            LD     A,(IX+3)         ;Get Velocity Y
+            NEG                     ;Get 2s Compliment
+            AND    07H              ;Mask out irrelevant bits
+            LD     (IX+3),A         ;Store updated Y Velocity
+            JR     M7               ;Try Move Again
+M9:         ;Check to see if Y > MAXROW
+            CP     MAXROW           ;Is it Greater than 
+            JR     C,M10            ;MAX ROW, No if Carry Set        
+            JR     NZ,M8            ;Or Zero Set 
+M10:        ;All Good, update Y Pos
+            LD     E,(IX+1)         ;Save Previous Y Pos
+            LD     (IX+1),A         ;Save New Pos Y
+M11:        ;Reset Timer
+            LD     A,(IX+4)         ;Get Accelleration
+            LD     (IX+5),A         ;Reset Timer
+            JR     M2               ;Get Next Ball
+
+; Find Coliding Pairs
+; Start at BALLLST, interate through all balls.   Compare Balls X,Y position.  If they
+; occupy the same LCD Charater spot, Bounce balls off eachother.  Only compare balls 
+; that haven't been previously compared.
+; The Elastic Physics is simpla as I assue all balls are the same Mass.  I calculate the 
+; Kinetic Energy between the two velocies, then subtract this from Ball 1 and Add it to
+; Ball two
+;
+; Kerg = Ball_1.vel - Ball_2.vel
+; Ball_1.vel -= Kerg
+; Ball_2.vel += Kerg
+;
+COLLISION:
+            LD     IY,BALLLST       ;Get Ball list
+C0:
+            PUSH   IY               ;Ball 1
+            POP    IX               ;Ball 2
+C1:
+            LD     A,(IX+7)         ;Get Next Ball 2
+            CP     0FFH             ;Is it the End of List?
+            JR     Z,C3             ;Yes, Get Next Ball 1
+
+            LD     BC,0007H         ;Move IX to next Ball 2
+            ADD    IX,BC
+            LD     B,(IX+0)         ;Get Ball 2 Position X
+            LD     C,(IX+1)         ;Get Ball 2 Position Y
+            CALL   PIXEL2CHAR       ;Convert to LCD Character Space
+            PUSH   BC               ;Save in HL
+            POP    HL
+            LD     B,(IY+0)         ;Get Ball 1 Position X
+            LD     C,(IY+1)         ;Get Ball 1 Position Y
+            CALL   PIXEL2CHAR       ;Convert to LCD Character Space
+            OR     A                ;Reset Carry flag, so SBC = SUB
+            SBC    HL,BC            ;Check to see if in same LCD Space
+            JR     Z,MATCH          ;Yes, Jump to Bounce Routine
+            JR     C1               ;No, Get Next Ball 2
+;Change Ball Velocities based on Elastic Collision formula.  The commented out section
+;Does the basic forumlar above.  But with equal Mass and no Friction, just swap the 
+;velocities of each ball...                      
+MATCH:
+            ;Calcultate Kinetic Energy between balls
+            ; LD     A,(IY+2)         ;Get Ball 1 Vx
+            ; LD     B,(IX+2)         ;Get Ball 2 Vx
+            ; SUB    B                ;B1.vx - B2.vx
+            ; LD     B,A              ;Save in B (Kine X)
+            ; LD     A,(IY+3)         ;Get Ball 1 Vy
+            ; LD     C,(IX+3)         ;Get Ball 2 Vy
+            ; SUB    C                ;B1.vy - B2.vy
+            ; LD     C,A              ;Save in C (Kine Y)
+
+            ;Subtract Kinetic Energy from Ball 1
+            ; LD     A,(IY+2)         ;Get Ball 1 Vx
+            ; SUB    B                ;B1.Vx - KineX
+            ; LD     (IY+2),A         ;Save new Ball 1 Vx 
+            ; LD     A,(IY+3)         ;Get Ball 1 Vy
+            ; SUB    C                ;B1.Vy - KineY
+            ; LD     (IY+3),A         ;Save Ball 1 Vy
+
+            ;Add Kinetic Energy from Ball 2
+            ; LD     A,(IX+2)         ;Get Ball 2 Vx
+            ; ADD    A,B              ;B2.Vx + KineX
+            ; LD     (IX+2),A         ;Save Ball 2 Vx
+            ; LD     A,(IX+3)         ;Get Ball 2 Vy
+            ; ADD    A,C              ;B2.Vy + KineY
+            ; LD     (IX+3),A         ;Save Ball 2 Vy
+
+            ;IY = Ball 1, IX = Ball 2
+            ;Interchange Ball 1 Velocity with Ball 2 Velocity
+            LD     A,(IY+2)         ;Get Ball 1 Vx
+            LD     B,(IX+2)         ;Get Ball 2 Vx
+            LD     (IY+2),B         ;Save Ball 2 Vx to Ball 1 Vx 
+            LD     (IX+2),A         ;Save Ball 1 Vx to Ball 2 Vx
+
+            LD     A,(IY+3)         ;Get Ball 1 Vy
+            LD     B,(IX+3)         ;Get Ball 2 Vy
+            LD     (IY+3),B         ;Save Ball 2 Vy to Ball 1 Vy 
+            LD     (IX+3),A         ;Save Ball 1 Vy to Ball 2 Vy
+             
+;Get Next Ball 1
+C3:
+            LD     BC,0007H         ;Move IY to next Ball 1
+            ADD    IY,BC          
+            LD     A,(IY+7)         ;Check if on Last Ball
+            CP     0FFH             ;
+            JR     NZ,C0            ;No, Repeat Collision for next Ball
+                                    ;Yes, Skip last ball as its already
+                                    ;been compared already
+            RET                     ;Continue with DRAW/MOVE Loop
+
+;Keyboard Movement for BMON, it just moves Ball 1
+; MOVE:
+;             RST    08H              ;Wait for Keyboard press
+;             LD     B,00H            ;Movement
+;             CP     06H              ;Up
+;             JR     NZ,M1
+;             DEC    B
+;             JR     MOVEY
+; M1:
+;             CP     04H              ;Down
+;             JR     NZ,M2
+;             INC    B
+; MOVEY:
+;             LD     A,(BALLLST+1)
+;             ADD    A,B
+;             JP     M,DRAW           ;Ignore if negative
+;             CP     MAXROW
+;             JR     Z,DRAW           ;Ignore if = MAXROW
+;             LD     (BALLLST+1),A    ;Save new position
+;             JR     DRAW
+; M2:
+;             CP     01H              ;Left
+;             JR     NZ,M3
+;             DEC    B
+;             JR     MOVEX
+; M3:
+;             CP     09H              ;Right
+;             JR     NZ,DRAW
+;             INC    B
+; MOVEX:
+;             LD     A,(BALLLST)
+;             ADD    A,B
+;             JP     M,DRAW           ;Ignore if negative
+;             CP     MAXCOL
+;             JR     Z,DRAW           ;Ignore if = MAXCOL
+;             LD     (BALLLST),A      ;Save new position
+;             JR     DRAW
+
+;Draw a character on the LCD.  Converts LCD Pixel to 20x4 Character.  Places Ball on Character
+;Entry:
+;   B = X-coordinate (00H-64H)
+;   C = Y-coordinate (00H-20H)
+;   D = Ball ASCII value
+;Exit:
+;   A corrupt
+DRAWLCD:
+            PUSH   HL
+            RST    30H              ;Check for LCD Busy
+            ;Convert Pixels to Character
+            CALL   PIXEL2CHAR
+            ;Get Rows
+            LD     A,C
+            LD     HL,LCDROWS
+            ADD    A,L
+            LD     L,A
+            LD     A,(HL)
+            ;Get Column
+            ADD    A,B
+            ;Set cursor to BC coordinate
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+            ;Draw Ball
+            RST    30H              ;Check for LCD Busy
+            LD     A,D
+            OUT    (LCD_DR),A       ;Draw Ball
+            POP    HL
+            RET
+
+;Converts Pixel Space to Character Space.  There are 100 Pixels for 20 Characters across and
+;32 Pixels for 4 Characters Down.
+;Entry:
+;   B = X-coordinate (00H-64H)
+;   C = Y-coordinate (00H-20H)
+;Exit:
+;   BC = Character Space
+PIXEL2CHAR:
+            LD     A,B              ;Store X in A
+            LD     E,05H            ;Five Pixels across
+            LD     B,0FFH           ;Clear B
+PC1:
+            INC    B                ;Count Characters
+            SUB    E                ;Check for zero
+            JR     C,PC2            ;or
+            JR     NZ,PC1           ;carry
+PC2:
+            LD     A,C              ;Store Y in A
+            LD     E,08H            ;Eight Pixels down
+            LD     C,0FFH           ;Clear C
+PC3:
+            INC    C                ;Count Characters
+            SUB    E                ;Check for zero
+            RET    C                ;or
+            JR     NZ,PC3           ;carry
+            RET
+
+;Load Custom LCD Characters to the CGRAM.  Only Eight can be used at once and reference them
+;from 0-7.
+LOADCHARS:
+            ; Tell the LCD that next data will be to CGRAM
+            RST    30H              ;Check for LCD Busy
+            LD     A,40H            ;CGRAM entry
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+
+            ; Save multiple characters to CGRAM using lookup table and OUTI
+            LD     BC,4000H | LCD_DR  ;B=40/8 (letters), C=84 (port number)
+            LD     HL,LCDCHARS      ;LCD table lookup
+LC1:
+            RST    30H              ;Check for LCD Busy
+            OUTI                    ;Send (HL) to port C, Decrement B, Increment HL
+            JR     NZ, LC1          ;OUTI sets zero if B=0;
+            RET
+
+;Balls Table, 6 Bytes per ball, End with FF.  Velocity is a range from 1 to 7 where,
+;1 is fast nagative, 4 is stationary and 7 is fast positive.
+;   Byte 1,2: Start X (1 - MAXCOL), Start Y (1 - MAXROW)
+;   Byte 3,4: Velocity Vector X (1 - 7), Vector Y (1 - 7)
+;   Byte 5:   Current Accelleration (00 = Fast to 80 = Slow)
+;   Byte 6:   Accelleration Timer (Initially set to 0)
+;   Byte 7:   Ball shape DDRAM/CGRAM ASCII Value
+LCDROWS:
+            DB     ROW1,ROW2,ROW3,ROW4
+LCDCHARS:
+            DB     00H,0AH,1FH,1FH,0EH,04H,00H,00H    ;Heart
+            DB     04H,0EH,0EH,0EH,1FH,00H,04H,00H    ;Bell
+            DB     1FH,15H,1FH,1FH,0EH,0AH,1BH,00H    ;Alien
+            DB     00H,0EH,1BH,11H,11H,1BH,0EH,00H    ;Ball
+            DB     01H,03H,0FH,0FH,0FH,03H,01H,00H    ;Speaker
+            DB     01H,03H,05H,09H,09H,0BH,1BH,18H    ;Sound
+            DB     00H,0EH,15H,1BH,0EH,0EH,00H,00H    ;Skull
+            DB     0EH,11H,11H,1FH,1BH,1BH,1FH,00H    ;Lock
+;Initial Ball Setup            
+BALLS:
+            ; DB     28,0DH,04H,01H,40H,00H,"R"
+            ; DB     33,0DH,04H,07H,40H,00H,"E"
+            ; DB     38,0DH,04H,03H,40H,00H,"A"
+            ; DB     43,0DH,04H,05H,40H,00H,"D"
+            ; DB     48,0DH,04H,07H,40H,00H,"Y"
+            ; DB     53,0DH,04H,01H,40H,00H,"Z"
+            ; DB     58,0DH,04H,06H,40H,00H,"8"
+            ; DB     63,0DH,04H,02H,40H,00H,"0",0FFH
+            DB     01H,01H,06H,04H,60H,00H,00H
+            DB     63H,01H,02H,04H,60H,00H,01H
+            DB     33H,15H,07H,07H,60H,00H,02H
+            DB     60H,09H,02H,06H,60H,00H,03H
+            DB     34H,18H,03H,03H,60H,00H,04H
+            DB     20H,1AH,06H,01H,60H,00H,05H
+            DB     40H,10H,02H,04H,60H,00H,06H
+            DB     30H,0DH,01H,03H,60H,00H,07H,0FFH
