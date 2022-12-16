@@ -1,0 +1,60 @@
+
+
+            ORG     2000H
+
+START:
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+
+            LD     C,CH1
+            LD     B,VOLUME
+            CALL   PSG_JUMP_TBL + 1BH  ;SET_VOLUME
+            LD     E,00H      ;CONTINUOUS NOTES
+            CALL   DO_TUNE
+
+            RST    08H    ;Wait for key press
+            
+            LD     C,CH1
+            LD     B,VOLUME
+            CALL   PSG_JUMP_TBL + 1BH  ;SET_VOLUME
+            LD     E,01H      ;SINGLE NOTES
+            CALL   DO_TUNE
+
+            RST    08H    ;Wait for key press
+            JP     START  ;Loop
+
+DO_TUNE:
+            LD     A,E5
+            LD     D,QUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+            LD     A,E5
+            LD     D,QUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+
+            LD     A,C5
+            LD     D,QUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+            LD     A,C5
+            LD     D,QUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+
+            LD     A,F5
+            LD     D,CROTCHET
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+
+            LD     A,E5
+            LD     D,QUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+
+            LD     A,C5
+            LD     D,SEMIQUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+
+            LD     A,E5
+            LD     D,SEMIQUAVER
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+
+            JP     PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+INCLUDE 'TEC_sn76489_lbr.z80' 
+

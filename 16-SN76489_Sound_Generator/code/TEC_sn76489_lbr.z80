@@ -1,0 +1,528 @@
+;----------------------------------------------------------
+;     TEC SN76489 Programable Sound Generator Library     
+;----------------------------------------------------------
+; By Brian Chiha - Nov-2022
+;--------------------------
+
+; This Library contains functions that help in creating music for
+; the SN76489 Programmable Sound Generator Chip.
+;
+; This file is to be compiled and placed anywhere in memory by setting 
+; the ORG directive to the location of memory desired.  Have a look at
+; some example code provided on how this is done.  Some constants might
+; be required to be changed depending on your setup, IE: PORT/VOLUME..
+;  
+; Once loaded into memory, the user functions that are available are:
+; ----- Main Functions
+; > PLAY_TUNE_MC - Plays upto 3 different channels at the same time
+; > PLAY_TUNE_SC - Plays notes on one channnel
+; > PLAY_VGM     - Plays a VGM file
+; > PLAY_VGM_STREAM - Play a VGM file that is streamed via Serial I/O
+; > TEC_PIANO    - Use the Keypay as a Piano
+; ----- Utility Functions
+; > PLAY_NOTE    - Plays one note for one note speed
+; > PLAY_PAUSE   - Plays one rest for one note speed
+; > DELAY        - Delays code with note speed at approx. 120 BPM
+; > MUTE_ALL     - Mute all channels
+; > PLAY_TONE    - Plays one note
+; > SET_TONE     - Sets the tone for one channel
+; > SET_VOLUME   - Sets the volue for one channel
+;
+; For more details on how these functions work see their definitions below
+
+; User Defined Variables:  Change the following to suit your setup
+PORT:       EQU    07H       ;Output Port for CE on the SN76489
+VOLUME:     EQU    0CH       ;Default Volume to 12
+LAST_KEY:   EQU    3EFFH     ;RAM memory address for TEC_PIANO
+RXBYTE:     EQU    004DH     ;Serial Receive Routine on BMON
+SQ_DELAY:   EQU    4500H     ;Delay timer for SEMIQUAVER at 4Mhz for 120 BPM
+
+; Main Code Below: Don't need to change anything below here.....
+LATCH_BYTE: EQU    10000000B ;Latch Bit 7
+VOLUME_BIT: EQU    00010000B ;Volume Bit 4
+CH1:        EQU    00000000B ;Tone 1 Bit
+CH2:        EQU    00100000B ;Tone 2 Bit
+CH3:        EQU    01000000B ;Tone 3 Bit
+CH4:        EQU    01100000B ;Noise Tone Bit
+
+;VGM file file codes
+NOTEID:     EQU    50H      ;Follow Channel, Note, Delay
+PAUSEID:    EQU    61H      ;Follow Channel, Delay
+PAUSE50:    EQU    63H      ;Pause 1/50 second
+ENDID:      EQU    66H      ;End of Song
+
+;Use this Jump Table to access the functions.  The location of these jumps
+;are dependant on where this code is put in memory using the ORG Directive.
+;IE: if ORG EQU 2000H, PLAY_VGM will be at location 2006H and is called by
+;doing a CALL 2006H in your code.  Or the PSG_JUMP_TBL label can be used 
+;plus the offset.  EG: CALL PSG_JUMP_TBL + 0CH will call the TEC_PIANO
+;routine.
+PSG_JUMP_TBL:                          ;Offsets
+            JP     PLAY_TUNE_MC       ;00H
+            JP     PLAY_TUNE_SC       ;03H
+            JP     PLAY_VGM           ;06H
+            JP     PLAY_VGM_STREAM    ;09H
+            JP     TEC_PIANO          ;0CH
+            JP     PLAY_NOTE          ;0FH
+            JP     PLAY_PAUSE         ;12H
+            JP     PLAY_TONE          ;15H
+            JP     SET_TONE           ;18H
+            JP     SET_VOLUME         ;1BH
+            JP     MUTE_ALL           ;1EH
+            JP     DELAY              ;21H
+
+;Multi Channel Tune
+;------------------
+;Plays upto 3 different channels at the same time
+;
+;Entry:  HL = Address of Tune data.
+;
+;        Tune Data is in the format of Note1, Note2, Note3, NoteType
+;        End with ENDID (0x66).  Note1,2,3 are the musical notes to
+;        play and NoteType is the "speed" of the note. EG:
+;
+;        SONG_DATA:   DB     D4, REST, REST, CROTCHET
+;                     DB     G4, C3,   REST, MINIM
+;                     DB     B4, C3,   D4,   QUAVER
+;                     DB     ENDID
+;
+PLAY_TUNE_MC:
+            EX     DE,HL
+PTM00:            
+            LD     C,00H      ;Initial Channel
+            LD     B,03H      ;Number of Channels
+PTM0:
+            PUSH   BC
+            LD     A,(DE)
+            CP     ENDID      ;Quit if ENDID found
+            JR     Z,END_S2
+            OR     A          ;Is it a REST?
+            JR     Z,DO_REST
+DO_TONE:
+            CALL   PLAY_TONE  ;Play Note Directly, A=Tone, C=Channel
+
+            LD     B,VOLUME   ;Set Volume to default
+            JR     DO_VOLUME  
+DO_REST:
+            LD     B,00H      ;Set Volume to Zero
+DO_VOLUME:
+            CALL   SET_VOLUME ;Set Volume for Tone
+
+            INC    DE
+            POP    BC
+            LD     A,C     ;Set Next Channel
+            OR     A
+            JR     NZ,PTM1
+            LD     C,10H
+PTM1:
+            RLC    C
+            DJNZ   PTM0
+
+            PUSH   DE
+            LD     A,(DE)  ;Get Note Type (Speed)
+            LD     D,A
+            CALL   DELAY   ;Hold Note for Note Type
+            POP    DE
+            
+            INC    DE
+            JR     PTM00
+END_S2:
+            CALL   MUTE_ALL  ;Finish, Mute all channels and exit
+            RET
+            
+;Single Channel Tune
+;-------------------
+;Plays notes on one channel
+;
+;Entry:  HL = Address of Tune data.
+;        E = Note Type (1=Single, 0=Continuous)
+;
+;        Tune Data is in the format of:
+;        <NOTEID>
+;            Note, NoteType
+;            ...
+;        <PAUSEID>
+;            NoteType
+;            ...
+;        <ENDID>
+; EG:
+;        SONG_DATA:  DB     NOTEID
+;                    DB     C5, CROTCHET
+;                    DB     B5, QUAVER
+;                    DB     PAUSEID
+;                    DB     MINIM
+;                    DB     NOTEID
+;                    DB     B4, QUAVER
+;                    DB     ENDID
+;
+PLAY_TUNE_SC:
+            LD     C,CH1      ;Use Channel 1
+            LD     B,VOLUME   ;Set Default Volume
+            CALL   SET_VOLUME
+            LD     A,(HL)
+PT0:
+            CP     NOTEID     ;Is it a note header
+            JR     NZ,PT1
+            INC    HL
+NOTE:
+            LD     A,(HL)     ;Play Note
+            INC    HL
+            LD     D,(HL)
+            CALL   PLAY_NOTE  ;Play Note and Hold Note for Note Type
+            INC    HL
+            LD     A,(HL)
+            CP     PAUSEID    ;Is it a Pause Header
+            JR     Z,PT1
+            CP     ENDID      ;Is it an End Header
+            JR     Z,END_S
+            JR     NOTE       ;No Play next note
+PT1:
+            CP     PAUSEID
+            JR     NZ,END_S
+            INC    HL
+PAUSE:
+            LD     D,(HL)     
+            CALL   PLAY_PAUSE ;Play a REST for Note Type Speed
+            INC    HL
+            LD     A,(HL)
+            CP     NOTEID     ;Is it a a note header
+            JR     Z,PT0
+            CP     ENDID      ;Is it an End Header
+            JR     Z,END_S
+            JR     PAUSE      ;No Play next pause
+END_S:
+            CALL   MUTE_ALL   ;End, Mute All Channels and Return
+            RET
+
+;VGM File Player
+;---------------
+;Plays a VGM file.  Data is to be already loaded in memory.
+;
+;Entry:  HL = Address of VGM data.
+;
+;        VGM data is to contain the following ID bytes:
+;        > 0x50 - Send next byte to SN76489
+;        > 0x61 - Hold the note for the next two byte sample count
+;        > 0x63 - Hold the note for 50ms
+;        > 0x66 - End of Data reached.
+;        All other ID bytes will be ignored.
+;
+PLAY_VGM:
+            LD     A,(HL)     ;Load Byte
+            CP     NOTEID     ;Is it a note 0x50?
+            JR     NZ,PV1
+            INC    HL
+            LD     A,(HL)     
+            OUT    (07),A     ;Send Note data to chip
+            JR     PV4        ;Move to next byte
+PV1:
+            CP     PAUSEID    ;Is it a delay 0x61?
+            JR     NZ,PV2
+            INC    HL
+            LD     E,(HL)
+            INC    HL
+            LD     D,(HL)
+PV11:       ;Delay needs to be 100 T-states / sample at 4Mhz
+            LD     B,04H      ;T State Padding
+PVD:        DJNZ   PVD
+            DEC    DE         ;Do note hold
+            LD     A,E
+            OR     D
+            JR     NZ,PV11
+            JR     PV4        ;Move to next byte
+PV2:
+            CP     PAUSE50    ;Is it a 50ms Pause?
+            JR     NZ,PV3
+            LD     DE,0372H   ;Wait 882 samples
+            JR     PV11
+PV3:
+            CP     ENDID      ;Is it an END byte 0x66?
+            JR     NZ,PV4
+            CALL   MUTE_ALL   ;Mute all channels and exit
+            RET
+PV4:
+            INC    HL
+            JR     PLAY_VGM   ;Repeat for next byte
+
+;VGM Stream Player
+;-----------------
+;Plays a VGM file that is streamed via Serial I/O.  The only data type
+;that is sees in the Tone and Volume Latch types from the SN76489.  Holds
+;are done externally.  The routine exits if an ENDID is seen (0x66).
+PLAY_VGM_STREAM:
+            CALL   RXBYTE    ;Get Serial Byte, (BMON routine), returns
+            CP     ENDID     ;the byte received in Register A
+            RET    Z         ;Exit if ENDID found
+            OUT    (07),A    ;Play tone
+            JR     PLAY_VGM_STREAM
+
+;TEC Piano
+;---------
+;Uses the Keypad of the TEC to play notes.  If key is pressed a tone will 
+;sound, the tone is muted if a key is released. To exit press Shift-GO.
+;Keyboard press is for the TEC-1F.
+TEC_PIANO:
+            LD     A,0FFH
+            LD     (LAST_KEY),A   ;Reset Last Key pressed
+            LD     C,CH1          ;Use Channel 1
+PLOOP:
+            IN     A, (00H)       ;Check for Key pressed, change to 03 for
+            BIT    6, A           ;TEC-1D or your own.
+            JR     NZ, P_MUTE     ;No Key, Mute Channel
+            IN     A, (00H)       ;Get Actual Key pressed
+            BIT    5, A           
+            RET    Z              ;If Shift key is pressed (bit 5 low) exit
+            AND    1FH            ;Mask out irrelavent bits on key press
+            LD     B,A
+            LD     A,(LAST_KEY)   ;Save Key pressed
+            CP     B
+            JR     Z,PLOOP        ;If its already pressed, just loop
+            LD     A,B
+            LD     (LAST_KEY),A   ;Save new key pressed
+            ADD    A,C4           ;Make base note C4 (Middle C)
+            CALL   PLAY_TONE      ;Play note
+            LD     B,VOLUME
+            CALL   SET_VOLUME     ;Turn volume on
+            JR     PLOOP
+P_MUTE:
+            LD     B,00H          ;Turn volume off
+            CALL   SET_VOLUME
+            JR     TEC_PIANO
+
+;Play a Note
+;-----------
+;Plays a Note with Delay (Hold).  Note will continue until another note
+;or Volume Change is done.  If Note Type = 1, notes will have a small
+;no volume delay at the end.
+;
+;Entry:  A = Note Index. (See Table Below)
+;        C = Channel Constant
+;        D = Delay, (See Note Speed)
+;        E = Note Type (1=Single, 0=Continuous)
+;
+;        EG:   LD A,C4
+;              LD C,CH2
+;              LD D,CROTCHET
+;              LD E,01H
+;              CALL PLAY_NOTE
+;
+PLAY_NOTE:
+            CALL   PLAY_TONE
+            CALL   DELAY
+            BIT    0,E       ;Check if a small pause is needed
+            RET    Z         ;No, Just exit
+
+            LD     B,00H
+            CALL   SET_VOLUME    ;Mute Volume
+            PUSH   DE
+            LD     DE,1000H      ;For 1000 bytes
+PN1:
+            DEC    DE
+            LD     A,E
+            OR     D
+            JR     NZ,PN1
+            POP    DE
+
+            LD     B,VOLUME      ;Reset Volume
+            JP     SET_VOLUME
+
+;Play Pause
+;----------
+;Plays a Rest Note with Delay (Hold).  Volume is set to default after rest
+;
+;Entry:  C = Channel Constant
+;        D = Delay, (See Note Speed)
+;
+PLAY_PAUSE:
+            LD     B,00H        ;Set volume to mute
+            CALL   SET_VOLUME
+            CALL   DELAY        ;Hold
+            LD     B,VOLUME
+            JP     SET_VOLUME   ;Reset Volume
+
+;Delay
+;-----
+;Delays the code for one note speed.  Delay is based off approximately
+;120 Beats per minute at 4Mhz clock speed
+;
+;Entry:  D = Delay, (See Note Speed)
+;
+DELAY:
+            PUSH   DE
+            LD     B,D
+DE1:
+            LD     DE,SQ_DELAY   ;Base Delay of 1 Semiquaver
+DE2:
+            DEC    DE
+            LD     A,E
+            OR     D
+            JR     NZ,DE2
+            DJNZ   DE1
+            POP    DE
+            RET
+
+;Mute all Channels
+;-----------------
+;Set all channels to a volume level of zero
+MUTE_ALL:
+            LD     B,00H
+            LD     C,CH1
+            CALL   SET_VOLUME
+            LD     C,CH2
+            CALL   SET_VOLUME
+            LD     C,CH3
+            CALL   SET_VOLUME
+            LD     C,CH4
+            JP     SET_VOLUME
+
+;Play a Tone
+;-----------
+;Play a tone based on a note.  Uses a Frequency Lookup table to
+;match the note with the actual frequency.
+;
+;Entry:  A = Note Index, (See Table Below)
+;
+;   EG   LD A,C4
+;        CALL PLAY_TONE
+PLAY_TONE:
+            PUSH   HL
+            PUSH   DE
+            RLCA                ;Double for 2 byte index
+            LD     H,00H
+            LD     L,A
+            LD     DE,FREQ_TBL  ;Frequnecy Table Lookup
+            ADD    HL,DE        ;Get address value
+            LD     A,(HL)
+            INC    HL
+            LD     H,(HL)
+            LD     L,A          ;Set HL to value at address
+            CALL   SET_TONE     ;Play the tone
+            POP    DE
+            POP    HL
+            RET
+
+;Set Tone
+;--------
+;Set tone for one channel.
+;
+;Entry:  HL = 10 bit data
+;        C = Channel
+;        HL contains the 10 bit information to be sent to the SN76489.
+;        To make it slightly quicker to work H contains the BITs for the 
+;        second latch byte and L contains the BITs for the first latch
+;        byte:  IE: if HL = 1F0AH, The first latch byte will be
+;        1CCV1010B, where 0A will be the Bits 0-3. and the second latch byte
+;        will be 00011111B, where 1F will be Bits 0-5.
+;
+SET_TONE: 
+            LD     A,L
+            AND    0FH         ;Ensure only use Bits 0-3
+            OR     LATCH_BYTE  ;Add Latch Byte
+            OR     C           ;Add Channel
+            OUT    (PORT),A    ;Output to chip
+            LD     A,H 
+            AND    3FH         ;Ensure only use Bits 0-5
+            OUT    (PORT),A    ;Output to chip
+            RET
+;Set Volume
+;----------
+;Sets the Attenuation for one tone
+;
+;Entry:  B = Volume, (0=low, 15=high)
+;        C = Channel
+;
+SET_VOLUME:
+            LD     A,0FH       ;Ensure only use Bits 0-3
+            SUB    B
+            OR     LATCH_BYTE | VOLUME_BIT ;Set Latch and Volume on Byte
+            OR     C
+            OUT    (PORT),A    ;Output to chip
+            RET
+
+;Constants and Frequency Table below.  Use in your code to make it more readable.
+;-----------------------------------
+
+;Note Index.  Use these constants to set the correct Note if using routines
+;that use the Frequency Table.
+;Note: As I'm using a 4MHz oscillator, the lowest note that the PSG can produce is C3
+REST:       EQU    00H
+C3:         EQU    01H
+C3S:        EQU    02H
+D3:         EQU    03H
+D3S:        EQU    04H
+E3:         EQU    05H
+F3:         EQU    06H
+F3S:        EQU    07H
+G3:         EQU    08H
+A3F:        EQU    09H
+A3:         EQU    0AH
+A3S:        EQU    0BH
+B3:         EQU    0CH
+
+C4:         EQU    0DH   ;Middle C
+C4S:        EQU    0EH
+D4:         EQU    0FH
+D4S:        EQU    10H
+E4:         EQU    11H
+F4:         EQU    12H
+F4S:        EQU    13H
+G4:         EQU    14H
+A4F:        EQU    15H
+A4:         EQU    16H
+A4S:        EQU    17H
+B4:         EQU    18H
+
+C5:         EQU    19H
+C5S:        EQU    1AH
+D5:         EQU    1BH
+D5S:        EQU    1CH
+E5:         EQU    1DH
+F5:         EQU    1EH
+F5S:        EQU    1FH
+G5:         EQU    20H
+A5F:        EQU    21H
+A5:         EQU    22H
+A5S:        EQU    23H
+B5:         EQU    24H
+
+C6:         EQU    25H
+C6S:        EQU    26H
+D6:         EQU    27H
+D6S:        EQU    28H
+E6:         EQU    29H
+F6:         EQU    2AH
+F6S:        EQU    2BH
+G6:         EQU    2CH
+A6F:        EQU    2DH
+A6:         EQU    2EH
+A6S:        EQU    2FH
+B6:         EQU    30H
+
+C7:         EQU    31H
+
+;Note Speed.  Use thse constants to set the speed of the note.  Based off
+;120 Beats per minute at 4Mhz.  These can be mixed together to get other
+;note speeds
+SEMIQUAVER: EQU    01H
+QUAVER:     EQU    SEMIQUAVER * 2
+CROTCHET:   EQU    QUAVER * 2
+MINIM:      EQU    CROTCHET * 2
+MINIM_DOT:  EQU    MINIM + CROTCHET
+SEMIBREVE:  EQU    MINIM * 2
+
+;Note Frequencies Table.  Table is reference from the Notes Index
+;constants above.  Based off A4 = 440Hz with a Note Index of 0.  
+;The formula used to to work these numbers are:
+;         freq = 440.0 * 2^(Note Index / 12) 
+;         10 Bit Number = 4000000 / (32.0 * freq)
+;
+;Note: To make use easer, the 10 Bit number has been rearranged from
+;      EG: 0385H -> 3805H. The First and Second latch have been 
+;      separated to make use easier. 
+FREQ_TBL:   DW     0000H,3B0BH,3805H,3503H,3203H,2F06H,2C0BH,2A03H
+            DW     270DH,2509H,2308H,2108H,1F0AH,1D0DH,1C02H,1A09H
+            DW     1901H,170BH,1605H,1501H,130EH,120CH,110CH,100CH
+            DW     0F0DH,0E0EH,0E01H,0D04H,0C08H,0B0DH,0B02H,0A08H
+            DW     090FH,0906H,080EH,0806H,070EH,0707H,0700H,060AH
+            DW     0604H,050EH,0509H,0504H,040FH,040BH,0407H,0403H
+            DW     030FH,030BH

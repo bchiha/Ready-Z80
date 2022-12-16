@@ -1,0 +1,12 @@
+
+
+            ORG     2000H
+
+START:
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+            CALL   PSG_JUMP_TBL + 0CH  ;TEC_PIANO
+            RET     
+
+INCLUDE 'TEC_sn76489_lbr.z80' 
+

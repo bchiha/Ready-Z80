@@ -1,0 +1,261 @@
+
+
+            ORG     2000H
+
+START:
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+            LD     HL,SONG_DATA
+            CALL   PSG_JUMP_TBL + 00H  ;PLAY_TUNE_MC
+            RST    08H    ;Wait for key press
+            JR     START  ;Loop
+
+;Funky Town, 3 Tone Data
+SONG_DATA:  DB     REST, REST, C3, QUAVER ;Base
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER   ;Intro
+            DB     REST, C5, C4, QUAVER
+            DB     REST, B4, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER
+            DB     REST, F5, C4, QUAVER
+            DB     REST, E5, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER   ;Intro
+            DB     REST, C5, C4, QUAVER
+            DB     REST, B4, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER
+            DB     REST, F5, C4, QUAVER
+            DB     REST, E5, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     F5, G4, C4, QUAVER
+
+            DB     F5, C5, F3, QUAVER  ;Talk About
+            DB     F5, C5, G3, QUAVER
+            DB     F5, C5, F3, QUAVER  
+            DB     REST, C5, G3, QUAVER
+            DB     D5, B4, E3, QUAVER  ;Talk About
+            DB     D5, B4, F3, QUAVER
+            DB     D5, B4, E3, QUAVER
+            DB     REST, B4, F3, QUAVER
+
+            DB     C5, A4, D3, QUAVER
+            DB     C5, A4, E3, QUAVER
+            DB     C5, A4, D3, QUAVER  ;Talk About
+            DB     REST, A4, E3, QUAVER
+            DB     C5, A4, C3, QUAVER
+            DB     C5, A4, D3, QUAVER  ;Moving
+            DB     C5, A4, C3, QUAVER
+            DB     C5, A4, D3, QUAVER
+
+            DB     REST, C5, C3, QUAVER  ;Intro
+            DB     REST, C5, C4, QUAVER
+            DB     REST, B4, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER
+            DB     REST, F5, C4, QUAVER
+            DB     REST, E5, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     F5, G4, C4, QUAVER
+
+            DB     F5, C5, F3, QUAVER  ;Talk About
+            DB     F5, C5, G3, QUAVER
+            DB     F5, C5, F3, QUAVER  
+            DB     REST, C5, G3, QUAVER
+            DB     D5, B4, E3, QUAVER  ;Talk About
+            DB     D5, B4, F3, QUAVER
+            DB     D5, B4, E3, QUAVER
+            DB     REST, B4, F3, QUAVER
+
+            DB     C5, A4, D3, QUAVER
+            DB     C5, A4, E3, QUAVER
+            DB     C5, A4, D3, QUAVER  ;Talk About
+            DB     REST, A4, E3, QUAVER
+            DB     C5, A4, C3, QUAVER
+            DB     C5, A4, D3, QUAVER  ;Moving
+            DB     E5, A4, C3, QUAVER
+            DB     E5, A4, D3, QUAVER
+
+            DB     REST, C5, C3, QUAVER   ;Intro
+            DB     REST, C5, C4, QUAVER
+            DB     REST, B4, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER
+            DB     REST, F5, C4, QUAVER
+            DB     REST, E5, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, B4, F3, QUAVER  ;Chorus
+            DB     REST, B4, F3, QUAVER
+            DB     REST, B4, C3, QUAVER  ;Wont You
+            DB     C5, REST, C3, QUAVER
+            DB     E5, REST, E3, QUAVER
+            DB     C5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER ;Take Me
+            DB     C5, REST, E3, QUAVER
+ 
+            DB     C5, B4, F3, QUAVER
+            DB     C5, B4, F3, QUAVER    ;To
+            DB     REST, B4, C3, QUAVER   
+            DB     F5, REST, C3, QUAVER
+            DB     F5, REST, E3, QUAVER  ;Funky
+            DB     E5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER ;Town
+            DB     E5, REST, REST, QUAVER
+
+            DB     REST, B4, F3, QUAVER  ;Chorus
+            DB     REST, B4, F3, QUAVER
+            DB     REST, B4, C3, QUAVER  ;Wont You
+            DB     C5, REST, C3, QUAVER
+            DB     E5, REST, E3, QUAVER
+            DB     C5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER ;Take Me
+            DB     C5, REST, E3, QUAVER
+ 
+            DB     C5, B4, F3, QUAVER
+            DB     C5, B4, F3, QUAVER     ;To
+            DB     REST, B4, C3, QUAVER   
+            DB     G5, REST, C3, QUAVER
+            DB     G5, REST, E3, QUAVER   ;Funky
+            DB     E5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER  ;Town
+            DB     E5, REST, REST, QUAVER
+
+            DB     REST, B4, F3, QUAVER  ;Chorus
+            DB     REST, B4, F3, QUAVER
+            DB     REST, B4, C3, QUAVER  ;Wont You
+            DB     C5, REST, C3, QUAVER
+            DB     E5, REST, E3, QUAVER
+            DB     C5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER ;Take Me
+            DB     C5, REST, E3, QUAVER
+ 
+            DB     C5, B4, F3, QUAVER
+            DB     C5, B4, F3, QUAVER    ;To
+            DB     REST, B4, C3, QUAVER   
+            DB     F5, REST, C3, QUAVER
+            DB     F5, REST, E3, QUAVER  ;Funky
+            DB     E5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER ;Town
+            DB     E5, REST, REST, QUAVER
+
+            DB     REST, B4, F3, QUAVER  ;Chorus
+            DB     REST, B4, F3, QUAVER
+            DB     REST, B4, C3, QUAVER  ;Wont You
+            DB     C5, REST, C3, QUAVER
+            DB     E5, REST, E3, QUAVER
+            DB     C5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER ;Take Me
+            DB     C5, REST, E3, QUAVER
+ 
+            DB     C5, B4, F3, QUAVER
+            DB     C5, B4, F3, QUAVER     ;To
+            DB     REST, B4, C3, QUAVER   
+            DB     G5, REST, C3, QUAVER
+            DB     G5, REST, E3, QUAVER   ;Funky
+            DB     E5, REST, E3, QUAVER
+            DB     E5, REST, D3S, QUAVER  ;Town
+            DB     E5, REST, REST, QUAVER
+
+            DB     REST, C5, C3, QUAVER   ;Intro
+            DB     REST, C5, C4, QUAVER
+            DB     REST, B4, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER
+            DB     REST, F5, C4, QUAVER
+            DB     REST, E5, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER   ;Intro
+            DB     REST, C5, C4, QUAVER
+            DB     REST, B4, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, G4, C4, QUAVER
+
+            DB     REST, C5, C3, QUAVER
+            DB     REST, F5, C4, QUAVER
+            DB     REST, E5, C3, QUAVER
+            DB     REST, C5, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+
+            DB     REST, REST, C3, QUAVER ;Base
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+            DB     REST, REST, C3, QUAVER
+            DB     REST, REST, C4, QUAVER
+
+            DB     REST, REST, REST, SEMIBREVE
+            DB     ENDID
+
+INCLUDE 'TEC_sn76489_lbr.z80' 
+

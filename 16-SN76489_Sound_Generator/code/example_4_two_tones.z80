@@ -1,0 +1,56 @@
+
+
+            ORG     2000H
+
+START:
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+            LD     HL,SONG_DATA
+            CALL   PSG_JUMP_TBL + 00H  ;PLAY_TUNE_MC
+            RST    08H    ;Wait for key press
+            JR     START  ;Loop
+
+;Amazing Grace, 2 Tone Data
+SONG_DATA:  DB     D4, REST, REST, CROTCHET
+            DB     G4, C3, REST, MINIM
+            DB     B4, C3, REST, QUAVER
+            DB     G4, C3, REST, QUAVER
+            DB     B4, E3, REST, MINIM
+            DB     A4, E3, REST, CROTCHET
+            DB     G4, F3, REST, MINIM
+            DB     E4, F3, REST, CROTCHET
+            DB     D4, C4, REST, MINIM
+            DB     D4, B3, REST, CROTCHET
+
+            DB     G4, A3, REST, MINIM
+            DB     B4, A3, REST, QUAVER
+            DB     G4, A3, REST, QUAVER
+            DB     B4, D3, REST, MINIM
+            DB     A4, D3, REST, CROTCHET
+            DB     D5, G3, REST, MINIM
+            DB     D5, A3, REST, CROTCHET
+            DB     D5, B3, REST, MINIM
+            DB     B4, B3, REST, CROTCHET
+
+            DB     D5, C4, REST, MINIM
+            DB     B4, C4, REST, QUAVER
+            DB     G4, C4, REST, QUAVER
+            DB     B4, C3, REST, MINIM
+            DB     A4, C3, REST, CROTCHET
+            DB     G4, F3, REST, MINIM
+            DB     E4, F3, REST, CROTCHET
+            DB     D4, C4, REST, MINIM
+            DB     D4, B3, REST, CROTCHET
+            
+            DB     G4, A3, REST, MINIM
+            DB     B4, A3, REST, QUAVER
+            DB     G4, A3, REST, QUAVER
+            DB     B4, G3, REST, MINIM
+            DB     A4, G3, REST, CROTCHET
+            DB     G4, F3, REST, MINIM_DOT
+            DB     G4, C4, REST, MINIM
+
+            DB     REST, REST, REST, MINIM
+            DB     ENDID
+
+INCLUDE 'TEC_sn76489_lbr.z80' 

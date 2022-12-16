@@ -1,0 +1,30 @@
+
+
+            ORG     2000H
+
+START:
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+
+            LD     C,CH1
+            LD     B,VOLUME
+            CALL   PSG_JUMP_TBL + 1BH  ;SET_VOLUME
+
+            LD     A,01H     ;Note Index
+            LD     B,C7-1    ;Total Number of Notes
+MM1:
+            LD     D,QUAVER  ;Set note speed
+            PUSH   AF
+            PUSH   BC
+            CALL   PSG_JUMP_TBL + 0FH  ;PLAY_NOTE
+            POP    BC
+            POP    AF
+            INC    A         ;Move to next note
+            DJNZ   MM1
+
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+            RST    08H    ;Wait for key press
+            JR     START  ;Loop
+    
+INCLUDE 'TEC_sn76489_lbr.z80' 
+

@@ -1,0 +1,14 @@
+{
+    "makefile.launchConfigurations": [
+        {
+            "cwd": "/Users/slarti/Projects/c++/VGMPlayer",
+            "binaryPath": "/Users/slarti/Projects/c++/VGMPlayer/VGMPlayer",
+            "binaryArgs": []
+        },
+        {
+            "cwd": "/Users/slarti/Documents/Ready-Z80/16-SN76489_Sound_Generator/VGM_Files",
+            "binaryPath": "/Users/slarti/Documents/Ready-Z80/16-SN76489_Sound_Generator/VGM_Files/VGMPlayer",
+            "binaryArgs": []
+        }
+    ]
+}

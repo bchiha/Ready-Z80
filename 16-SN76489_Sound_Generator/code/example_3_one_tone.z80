@@ -1,0 +1,77 @@
+
+
+            ORG     2000H
+
+START:
+            CALL   PSG_JUMP_TBL + 1EH  ;MUTE_ALL
+
+            LD     E,00H  ;Continuous Notes
+            LD     HL,SONG_DATA
+            CALL   PSG_JUMP_TBL + 03H  ;PLAY_TUNE_SC
+            RST    08H    ;Wait for key press
+            JR     START  ;Loop
+
+;Country Gardens, 1 Tone Data
+SONG_DATA:  DB     NOTEID
+            DB     C5, CROTCHET
+            DB     C5, QUAVER
+            DB     B4, QUAVER
+            DB     A4, CROTCHET
+            DB     A4, CROTCHET
+            DB     G4, CROTCHET
+            DB     G4, QUAVER
+            DB     F4, QUAVER
+            DB     E4, CROTCHET
+            DB     E4, QUAVER
+            DB     F4, QUAVER
+            DB     G4, CROTCHET
+            DB     C4, CROTCHET
+            DB     D4, CROTCHET
+            DB     F4, CROTCHET
+            DB     E4, CROTCHET
+            DB     D4, CROTCHET
+            DB     C4, MINIM
+            DB     C5, QUAVER
+            DB     D5, QUAVER
+            DB     C5, QUAVER
+            DB     A4, QUAVER
+            DB     B4, CROTCHET
+            DB     G4, CROTCHET
+            DB     C5, QUAVER
+            DB     D5, QUAVER
+            DB     C5, QUAVER
+            DB     A4, QUAVER
+            DB     B4, CROTCHET
+            DB     G4, CROTCHET
+            DB     C5, QUAVER
+            DB     D5, QUAVER
+            DB     C5, QUAVER
+            DB     B4, QUAVER
+            DB     A4, CROTCHET
+            DB     D5, CROTCHET
+            DB     B4, CROTCHET
+            DB     A4, CROTCHET
+            DB     G4, CROTCHET
+            DB     E4, QUAVER
+            DB     F4, QUAVER
+            DB     G4, CROTCHET
+            DB     C5, QUAVER
+            DB     B4, QUAVER
+            DB     A4, CROTCHET
+            DB     A4, CROTCHET
+            DB     G4, CROTCHET
+            DB     G4, QUAVER
+            DB     F4, QUAVER
+            DB     E4, CROTCHET
+            DB     E4, QUAVER
+            DB     F4, QUAVER
+            DB     G4, CROTCHET
+            DB     C4, CROTCHET
+            DB     D4, CROTCHET
+            DB     F4, CROTCHET
+            DB     E4, CROTCHET
+            DB     D4, CROTCHET
+            DB     C4, MINIM
+            DB     ENDID
+
+INCLUDE 'TEC_sn76489_lbr.z80' 
