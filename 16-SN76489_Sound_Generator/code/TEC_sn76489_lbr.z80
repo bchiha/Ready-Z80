@@ -213,7 +213,7 @@ PLAY_VGM:
             JR     NZ,PV1
             INC    HL
             LD     A,(HL)     
-            OUT    (07),A     ;Send Note data to chip
+            OUT    (PORT),A     ;Send Note data to chip
             JR     PV4        ;Move to next byte
 PV1:
             CP     PAUSEID    ;Is it a delay 0x61?
@@ -253,7 +253,7 @@ PLAY_VGM_STREAM:
             CALL   RXBYTE    ;Get Serial Byte, (BMON routine), returns
             CP     ENDID     ;the byte received in Register A
             RET    Z         ;Exit if ENDID found
-            OUT    (07),A    ;Play tone
+            OUT    (PORT),A    ;Play tone
             JR     PLAY_VGM_STREAM
 
 ;TEC Piano
