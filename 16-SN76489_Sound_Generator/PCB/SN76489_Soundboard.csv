@@ -1,6 +1,6 @@
 "Designator","Package","Quantity","Value"
 "R1","Carbon/Metal Film","1","10Ω"
-"R2","Carbon/Metal Film","1","1M"
+"R2","Carbon/Metal Film","1","220k"
 "R3","Carbon/Metal Film","1","10k"
 "RV1","Trimpot","1","100k"
 "C1,C3,C4","Greencap","3","270nF"
@@ -20,3 +20,4 @@
 "U1","DIP-8","1","LM386"
 "U2","DIP-16","1","SN76489AN"
 "U3","DIP-18","1","LM3915N"
+"SOCKETS","DIP-8 / DIP-16 / DIP-18","3","For U1,U2,U3"
