@@ -1,0 +1,527 @@
+; Program Name: Matrix Rain
+; Author: B Chiha - Jan 2023
+; Description: Matrix Movie Raining Character Demo
+; For the Ready? Z80 YouTube Channel https://youtu.be/zeX1FkV3w1U
+
+; Constants		
+LCDinstPort:	.equ 10h    ;LCD Instruction Port
+LCDdataPort:	.equ 11h    ;LCD Data Port
+MemBankPort:    .equ 06h    ;Memory Bank Port
+
+; Includes		
+.nolist
+#include "ti83plus.inc"     ;TI 83 System file
+.list
+		
+; TI-83/84 Assembly RAM applications always start at userMem (9D95H)
+; Two bytes prior requires 0xBB (t2ByteTok) and 0x6D (tasmCmp) constants.
+; This ensures only ASM(prog) will execute this code.
+
+		.org userMem - 2 ;9D95H - 2
+		.db t2ByteTok,tasmCmp     ;Ensures only ASM( will run it
+
+start:
+; Set up flags and inital configuration	
+		b_call(_RandInit) ;Sets seed1=12345
+		b_call(_RunIndicOff) ;turn run indicator off
+		res indicOnly, (IY + indicFlags) ;To detect key press
+		set textWrite, (IY + sGrFlags)  ;Write to display buffer only
+		res apdRunning, (IY + apdFlags) ;Disable APD (Automatic Power Down)
+
+; Replace standard font with custom font with this hook or patch.		
+		ld hl, myFontHook
+		in a, (MemBankPort)  ;Get the current memory page (where FontHook is)
+		b_call(_SetFontHook) ;Install the font hook
+		
+
+; Initialse gets call once and sets up the stream data
+
+initialise:	
+; Set up streams randomly.  Stream data is saved in 'Safe' RAM.  There will be 12 
+; streams.  Each stream will have its own speed.  There will be between 4-7 characters
+; in each stream and they will also have their own change rate between 1-32.
+
+		ld bc, 0C01h 	    ;b=12 total columns, c=01 initial column
+		ld hl, saveSScreen  ;Store stream data in 'safe' RAM
+
+; Stream data will contain a list of data with the following information
+; Stream = Column Position, Stream Speed
+;               Row Position, Current Character, Chracter Change Rate	
+;               ... (between 3 to 7 chracters in stream)
+;               Row Position, Current Character, Chracter Change Rate
+;               0xFF (end of characters)
+;          0xFF (end of stream)
+;
+; EG: (Displaying one stream)
+; 01h, 03H, 00h, 'A', 14h, 08h, 'B', 03h, 10h, 'C', 0Dh, 18h, 'D', 12h, 0FFh, 0FFh
+; \------/  \-----------/  \-----------/  \-----------/  \-----------/  \--------/ 
+;  Stream    Character 1    Character 2    Character 3    Character 4    EOS, EOF
+;
+nextStream:	
+		ld (hl), c 		;Add column position
+		
+		inc hl
+		call random     
+		and 03h
+		inc a 			;make non zero
+		ld (hl), a 		;Add speed of stream moving downwards (1-4)
+		
+		call random
+		and 03h
+		add a, 04h      ;Each stream will have between 4 and 7 characters
+		ld e, a 		;Store count in E
+		ld d, 0h 		;Initial Row
+nextChar:	
+		inc hl
+		ld (hl), d 		;Save row
+		ld a, 08h       ;Move next row 8 pixels down
+		add a, d
+		ld d, a
+		
+		inc hl
+		call randChar 	;Get A Random Chacacter
+		ld (hl), a 		;Save character (ASCII Capital A-z)
+		
+		inc hl
+		call random
+		and 1Fh         ;Change rate will between 1 and 32
+		inc a 			;make non zero
+		ld (hl), a 		;Add change rate
+		
+		dec e
+		jr nz, nextChar ;Do next character until all characters are generated
+		
+		inc hl
+		ld a, 0FFh
+		ld (hl), a 		;Add end of individual stream flag
+		
+		inc hl
+		ld a, 08h       ;Each column width is 8 pixels
+		add a, c 		;Update column
+		ld c, a         ;Save column
+		
+		djnz nextStream ;Generate next stream
+		
+		ld a, 0FFh    
+		ld (hl), a 		;Add end of all streams flag
+		
+; Clear Screen
+		b_call(_ClrLCDFull)  ;Clear LCD
+		b_call(_HomeUp)      ;Put curson at 0,0
+
+; Draw Loop updates screen and data information and will loop endlessly.  To
+; break out of the loop the Enter Key is to be pressed.
+
+drawLoop:	
+		ld hl, saveSScreen - 1     ;Load HL with Stream data (minus 1)
+
+; Here each stream is read and each character is written to the plotSScreen for
+; displaying.  Characters are moved down each row by the stream speed.  Characters
+; are also changed to a new character if required.  If the character reaches the 
+; bottom of the screen, its row will be set to 0.
+newStream:	
+		inc hl 			;column
+		ld a, (hl) 		;Get column
+		cp 0FFh         ;Is it End of Stream data?
+		jr z, printLCD  ;Yes, write to LCD for display
+		ld c, a         ;save current column in c
+		inc hl 			;stream speed
+		ld d, (hl) 		;Store in d
+		inc hl 			;row
+printChar:	
+		ld a, (hl) 		;Get row
+		cp 0FFh         ;Is it End of Characters in stream?
+		jr z, newStream ;Yes, get next stream
+		
+		ld (penRow), a 	;set row to penRow variable
+		
+		add a, d        ;Update row based on stream speed
+		and 3Fh 		;64 rows/overflow.  Set row to top if passed last row
+		ld (hl), a 		;Save new row
+		
+		ld a, c      
+		ld (penCol), a 	;set column to penCol variable
+		
+		inc hl 			;character
+		ld a, (hl) 		;Get character to display
+		
+		push de
+		b_call(_VPutMap)  ;Write Character at (penCol,penRow) to plotSScreen buffer
+		pop de
+		
+		inc hl 			;change rate of character
+		ld e, (hl)      ;Store in e
+		ld a, r         ;Load a with r register to get a sudo ramdon value
+modRate:	
+		cp e            ;compare the change rate to the r register
+		jr nc, skipRate ;is changer rate less than r register, dont update charater
+newChar:	
+		call randChar   ;Get new character
+		dec hl
+		ld (hl), a      ;Save it back to stream for next cycle
+		inc hl
+skipRate:	
+		inc hl 			;next character in stream.
+		jr printChar    ;repeat until all chracters in stream are plotted.
+		
+; Now all the character data is saved in plotSScreen, use the LCD ports to display
+; each byte of data directly plotting them to the LCD using the LCD hardware calls
+printLCD:	
+		
+; This is a fastCopy routine found in
+; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Graphic:Fastcopy.  
+; It individually draws bytes from the graphics buffer (plotSScreen) to the LCD
+; using the instruction port (10H) to set the cursor position and data port (11H)
+; to draw the byte data.  As a bonus it also deleted the plotSScreen data after
+; displaying it to the screen.  This saves doing a clear graphic buffer later on.
+		di              ;Dispable interrupts to ensure all screen is displayed
+		ld a, 80h
+		out (LCDinstPort), a   ;Set Cursor X to top LEFT of screen
+		ld hl, plotSScreen - 12 - ( - (12 * 64) + 1)
+		ld a, 20h       ;Set Cursor Y to top LEFT of screen
+		ld c, a
+		inc hl          ;fake delay for LCD
+		dec hl
+fastCopyAgain:	
+		ld b, 64
+		inc c
+		ld de, - (12 * 64) + 1
+		out (LCDinstPort), a  ;Set Cursor Y to current cursor position.
+		add hl, de      ;Load HL to data at Cursor X,Y
+		ld de, 12
+fastCopyLoop:	
+		add hl, de
+		nop             ;fake delay to LCD
+		ret z
+		ld a, (hl)      ;Get graphics data
+		ld (hl), 0 		;erase graphics data!
+		out (LCDdataPort), a  ;Draw graphics data to LCD
+		ret z
+		djnz fastCopyLoop   ;Get next row of data
+		ld a, c
+		cp 2Bh + 1          ;Are there more columns
+		jr nz, fastCopyAgain ;Yes, do next column
+		ei              ;enable interupts
+
+; Scan the keyboard by checking if a key is currently being pressed.
+; If key is the 'Clear' buttons, restart the program.  If key is 'Enter'
+; then exit the program 		
+keyPoll:	
+		b_call(_GetCSC)   ;Scan keyboard buffer
+		cp skClear        ;Is it Clear?
+		jp z, initialise  ;Yes, restart program
+		cp skEnter        ;Is it Enter?
+		jp nz, drawLoop   ;No, do another draw loop
+		
+; Enter has been pressed.  Exit cleaning.  Firstly, remove the Font Hook so that
+; standard fonts are used again.  But also call JForceCmdNoChar.
+; NOTE: I found that doing a standard 'ret' doesn't clear the screen, and occationally crashes.
+;       But JForceCmdNoChar does work properly.  JForceCmdNoChar is maining used for Applications
+;       and NOT RAM programs like this one.  It works fine provided that this program isn't 
+;       called from a Shell.  Only call this program using 'ASM(' from the standard TI catalog.
+; 
+		b_call(_ClrFontHook)      ;reset Font Hook
+		b_call(_JForceCmdNoChar) ;Exit safely.....(See Note above)
+		
+; Create a Random ASCII Capital Letter
+;
+; Exit:   A = Random ASCII Characgter
+;
+randChar:	
+		call random   ;Get a random number between 00-FF
+		and 1Fh       ;Reduce value to maximum 32
+		cp 26         ;Is it over 26? (A-Z)
+		jr nc, randChar  ;Yes, try again
+		add a, 'A'    ;No, return an ASCII character between capital 'A' and 'Z'
+		ret
+		
+; Generate a Random Number between 00-FF
+;
+; Exit:   A = Random number
+;
+random:	
+		push hl
+		push de
+		ld hl, (seed1)  ;Use TI seed1 variable because its there...
+		ld a, r
+		ld d, a
+		ld e, (hl)
+		add hl, de
+		add a, l
+		xor h
+		ld (seed1), hl
+		pop de
+		pop hl
+		ret
+		
+; This routine is called every time a character is to be plotted to the screen
+; The start of the hook must have 83h as its first byte.  This is ignored by the
+; hook but is used to let the calculator know its a hook routine.
+; For the Font Hook, two inputs are needed
+; Input:
+;          A = 0 or 1, Small or Large font.  Must be 0 was Small variable widths fonts are used
+;          HL = character data table index for current characters
+; 
+; As the code uses Small fonts, A must be zero.  HL points the the standard font table
+; for the character it is trying to display.  It is already indexed and each font character
+; data is 8 bytes.  I subtract Capital 'A' to get the base offset of the capital charater
+; IE: A=0, B=8, C=16, Z=200.  This is then used to offset my custom Katakana Japanese font
+; finally once the character data is found, save it in sFont_record variable.  This is then
+; used by VPutMap to draw the characger to the LCD
+myFontHook:	
+		.db 83h             ; Required for all hooks
+		or a 			    ; check hook mode
+		ret nz              ; exit if trying to display a Large font
+		ld de, 0208h 	    ;'A' = 41h * 8
+		sbc hl, de          ; get base index
+		ex de, hl           ; store base index in de
+		ld hl, fontdata     ; get our replacement bitmap table
+		add hl, de          ; index it to the correct character to use
+		ld de, sFont_record ; copy character data to sFont_record
+		ld bc, 0008H        ; copy it into RAM
+		ldir
+		ld hl, sFont_record ; set HL to sFont_record for return
+		cp a                ; remove carry flag
+		ret
+		
+		
+; Katakana Font characters.  These characters use the Small variable width font.
+; For the small font, 8 bytes are required per character.  The format is the first
+; byte is the width of the font and the next seven bytes is the font data.
+; A bit set means display that pixel.  I've left the bytes in binary value to
+; make the character visual to read  
+ 
+fontdata:	
+		.db 6
+		.db 00111110b   ; #####
+		.db 00000010b   ;     #
+		.db 00001010b   ;   # #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		.db 00100000b   ; #
+		
+		.db 6
+		.db 00000010b   ;     #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00011000b   ;  ##
+		.db 00101000b   ; # #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		
+		.db 6
+		.db 00001000b   ;   #
+		.db 00111110b   ; #####
+		.db 00100010b   ; #   #
+		.db 00100010b   ; #   #
+		.db 00000010b   ;     #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		
+		.db 6
+		.db 00000000b   ;
+		.db 00111110b   ; #####
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00111110b   ; #####
+		
+		.db 6
+		.db 00000100b   ;    #
+		.db 00111110b   ; #####
+		.db 00000100b   ;    #
+		.db 00001100b   ;   ##
+		.db 00010100b   ;  # #
+		.db 00100100b   ; #  #
+		.db 00001100b   ;   ##
+		
+		.db 6
+		.db 00010000b   ;  #
+		.db 00111110b   ; #####
+		.db 00010010b   ;  #  #
+		.db 00010010b   ;  #  #
+		.db 00010010b   ;  #  #
+		.db 00010010b   ;  #  #
+		.db 00100110b   ; #  ##
+		
+		.db 6
+		.db 00001000b   ;   #
+		.db 00001110b   ;   ###
+		.db 00111000b   ; ###
+		.db 00001110b   ;   ###
+		.db 00111000b   ; ###
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		
+		.db 6
+		.db 00001110b   ;   ###
+		.db 00010010b   ;  #  #
+		.db 00010010b   ;  #  #
+		.db 00100010b   ; #   #
+		.db 00000010b   ;     #
+		.db 00000100b   ;    #
+		.db 00011000b   ;  ##
+		
+		.db 6
+		.db 00001000b   ;   #
+		.db 00001110b   ;   ###
+		.db 00010100b   ;  # #
+		.db 00100100b   ; #  #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		
+		.db 6
+		.db 00011110b   ;  ####
+		.db 00000010b   ;     #
+		.db 00000010b   ;     #
+		.db 00000010b   ;     #
+		.db 00000010b   ;     #
+		.db 00000010b   ;     #
+		.db 00011110b   ;  ####
+		
+		.db 6
+		.db 00010100b   ;  # #
+		.db 00010100b   ;  # #
+		.db 00111110b   ; #####
+		.db 00010100b   ;  # #
+		.db 00010100b   ;  # #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		
+		.db 6
+		.db 00100000b   ; #
+		.db 00010010b   ;  #  #
+		.db 00100010b   ; #   #
+		.db 00010100b   ;  # #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00110000b   ;  ##
+		
+		.db 6
+		.db 00111110b   ; #####
+		.db 00000010b   ;     #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00010100b   ;  # #
+		.db 00100010b   ; #   #
+		
+		.db 6
+		.db 00010000b   ;  #
+		.db 00111110b   ; #####
+		.db 00010010b   ;  #  #
+		.db 00010100b   ;  # #
+		.db 00010000b   ;  #
+		.db 00010000b   ;  #
+		.db 00001110b   ;   ##
+		
+		.db 6
+		.db 00100010b   ; #   #
+		.db 00100010b   ; #   #
+		.db 00010010b   ;  #  #
+		.db 00000100b   ;    #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		
+		.db 6
+		.db 00001110b   ;   ###
+		.db 00010010b   ;  #  #
+		.db 00010010b   ;  #  #
+		.db 00101010b   ; # # #
+		.db 00000110b   ;    ##
+		.db 00000100b   ;    #
+		.db 00011000b   ;  ##
+		
+		.db 6
+		.db 00000010b   ;     #
+		.db 00111100b   ; ####
+		.db 00001000b   ;   #
+		.db 00111110b   ; #####
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		
+		.db 6
+		.db 00101010b   ; # # #
+		.db 00101010b   ; # # #
+		.db 00101010b   ; # # #
+		.db 00000010b   ;     #
+		.db 00000010b   ;     #
+		.db 00000100b   ;    #
+		.db 00011000b   ;  ##
+		
+		.db 6
+		.db 00011100b   ;  ###
+		.db 00000000b   ; 
+		.db 00111110b   ; #####
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		
+		.db 6
+		.db 00010000b   ;  #
+		.db 00010000b   ;  #
+		.db 00010000b   ;  #
+		.db 00011000b   ;  ##
+		.db 00010100b   ;  # #
+		.db 00010000b   ;  #
+		.db 00010000b   ;  #
+		
+		.db 6
+		.db 00000100b   ;    #
+		.db 00111110b   ; #####
+		.db 00000100b   ;    #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		
+		.db 6
+		.db 00000000b   ;
+		.db 00011100b   ;  ###
+		.db 00000000b   ;
+		.db 00000000b   ;
+		.db 00000000b   ;
+		.db 00000000b   ;
+		.db 00111110b   ; #####
+		
+		.db 6
+		.db 00111110b   ; #####
+		.db 00000010b   ;     #
+		.db 00010010b   ;  #  #
+		.db 00010100b   ;  # #
+		.db 00001000b   ;   #
+		.db 00010100b   ;  # #
+		.db 00100010b   ; #   #
+		
+		.db 6
+		.db 00001000b   ;   #
+		.db 00111110b   ; #####
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00011100b   ;  ###
+		.db 00101010b   ; # # #
+		.db 00001000b   ;   #
+		
+		.db 6
+		.db 00000100b   ;    #
+		.db 00000100b   ;    #
+		.db 00000100b   ;    #
+		.db 00001000b   ;   #
+		.db 00001000b   ;   #
+		.db 00010000b   ;  #
+		.db 00100000b   ; #
+		
+		.db 6
+		.db 00010100b   ;  # #
+		.db 00010100b   ;  # #
+		.db 00010100b   ;  # #
+		.db 00100010b   ; #   #
+		.db 00100010b   ; #   #
+		.db 00100010b   ; #   #
+		.db 00100010b   ; #   #
