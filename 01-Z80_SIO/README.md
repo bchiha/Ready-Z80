@@ -26,3 +26,15 @@ The consumer will do the following:
  - Read the current value of the tail pointer
  - If the tail pointer equals the head pointer the buffer is empty and exit
  - Otherwise, read the data in the tail position and increase the tail pointer
+
+
+## Serial port Settings for examples
+
+Assuming you construct the circuit and code as per the examples given, the following settings apply:
+
+- TEC clock: 3.6864MHz
+- SIO SCLK: Connect to SCLK4
+- Serial port: 14400 bps, 8 bit, no partity, 1 stop bit
+- For SCLK2, Serial speed is 28,800
+- For SCLK, Serial speed is 57,600
+
