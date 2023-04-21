@@ -1,0 +1,225 @@
+; FULL QWERTY KEYBOARD Routine
+; ----------------------------
+; By B Chiha
+; 
+; This file contains the routines that handle keyboard presses and 
+; translation for the TEC QWERTY Keyboard.
+
+; KEY_PROCESS Routine for the TEC Keyboard
+; ----------------------------------------
+; This routine handles keyboard processing.  It manages Auto Key repeat
+; and all key to ASCII conversion including SHIFT characters.
+; Any other valid key combination is to be handled via the calling program.
+;
+; Output:   D : Modifier key, 00 = Shift, 01 = Ctrl, 02 = Function
+;           E : Key pressed in ASCII
+;           Zero Flag : SET = Valid Key, NOTSET = Invalid key or no key pressed
+;
+KEY_PROCESS:	
+        LD IX, V_KEYAUTO ;SET HL TO POINT TO AUTO KEY STATUS
+        CALL KEYSCAN    ;CALL KEYSCAN TO GET PRESSED KEY
+        CALL KEYSCAN    ;REPEAT TO MINIMISE KEY BOUNCE
+        CALL KEYSCAN    ;
+        JR NZ, KNEW     ;NO KEY PRESS OR INVALID, RESTART TIMER
+        LD A, (V_KEY)   ;LOAD LAST KEY PRESSED
+        CP E            ;IS IT THE SAME AS THE NEW KEY
+        LD (V_KEY), DE 	;SAVE KEY VALUE
+        JR Z, KPRESS 	;JUMP IF A KEY IS PRESS A REPEAT KEY
+KNEW:	LD (IX), 0x08 	;ELSE SET AUTO KEY STATUS TO
+        LD (IX + 1), 0x00 ;FULL TIMER
+        RET 		;NO KEY STATE AND RETURN ZERO FLAG NOT SET
+KPRESS:	BIT 3, (IX) 	;TEST AUTO KEY STATUS FOR FIRST KEY
+        JR NZ, KDELAY 	;JUMP IF SO TO SET LONG KEY DELAY
+        DEC (IX + 1) 	;ELSE COUNT DOWN KEY DELAY
+        JR NZ, KEY_PROCESS ;LOOP IF NOT READY FOR KEY REPEAT
+        DEC (IX)
+        JR NZ, KEY_PROCESS ;LOOP IF NOT READY FOR KEY REPEAT
+        LD (IX), 0x01 	;ELSE SET SHORT TIME DELAY BETWEEN
+KHAND:	XOR A 		;SET ZERO FLAG AND CLEAR CARRY
+        LD DE, (V_KEY) 	;PUT INPUT KEY IN DE
+        JP KSERVICE 	;AND RETURN FOR KEY SERVICE
+KDELAY:	LD (IX), 0x07 	;SET KEY TIMER FOR LONG DELAY
+        JR KHAND 	;JUMP TO SERVICE PATCH, TONE ETC.
+
+; KSERVICE CONVERTS A VALID KEY TO ITS ASCII VALUE.  CURRENTLY REGISTER
+; E WILL BE A NUMBER BETWEEN 0-3F.  D WILL BE 0-2 WHERE 0 = SHIFT PRESSED
+KSERVICE:	
+        LD A, E         ;GET KEY PRESSED
+
+K_CAPS:	                ;HANDLE CAPS LOCK
+        CP 07H          ;IS CAPS KEY PRESSED?
+        JR NZ, K_MODS   ;NO MOVE TO KEY MOD ROUTINE
+        LD B, A         
+        LD A, (V_KEYCAPS) ;MAKE V_KEYCAPS 
+        XOR B           ;EQUAL 0 OR NON ZERO (07)
+        LD (V_KEYCAPS), A ;TO SIGNIFY CAPS
+        LD A, B
+        JR K_KEYEND     ;CLEANLY EXIT ROUTINE
+
+K_MODS:	                ;HANDLE ESC, CR, SPACE, SINGLE QUOTE AND BACKSLASH
+        LD HL, KMOD_TABLE
+        LD BC, 0005H    ;FIVE KEYS TO CHECK
+K_CPI:	CPI             ;DOES IT EQUAL ONE OF THEM IN KMOD_TABLE?
+        JR Z, K_MODA    ;YES, MOD IT?
+        INC HL          ;MOVE HL TO NEXT KEY
+        JP PE, K_CPI    ;ARE MORE KEYS NEEDED TO BE CHECKED?
+        JR K_NUMCHAR    ;KEY DOESN'T NEED MODDING, MOVE TO NUMCHAR ROUTINE
+K_MODA:	
+        LD A, (HL)      ;SAVE A WITH MODDED KEY VALUE
+        CP 26H          ;IS IT EITHER A QUOTE OR BACK SLASH?
+        JR C, K_KEYEND  
+        LD B, A
+        LD A, D         ;IS SHIFT KEY PRESSED
+        OR A
+        JR NZ, K_ALPEND
+        LD HL, K_SFTABLE ;GET SHIFT VALUE FROM SHIFT TABLE
+        LD A, 12H
+        ADD A, C
+        ADD A, L
+        JR NC, $ + 3
+        INC H
+        LD L, A
+        LD A, (HL)      ;SAVE SHIFTED KEY
+        JR K_KEYEND     ;EXIT CLEANLY
+KMOD_TABLE:	
+; FIRST VALUE IS KEY, SECOND VALUE IS MODDED ASCII, 5 KEYS IN TOTAL
+        DB  0AH,0DH,0CH,1BH,0DH,20H,0EH,27H,3FH,5CH
+        
+K_NUMCHAR:	        ;HANDLE NUMBER AND CHARACTERS
+        CP 21H          ;IS IT IN THE RANGE OF NUMBER/CHARACTERS?
+        JR NC, K_ALPHA  ;NO JUMP TO ALPHA CHECK
+        CP 0FH
+        JR C, K_ALPHA   ;NO JUMP TO ALPHA CHECK
+        ADD A, 1DH      ;INDEX KEYSCAN TO GET CORRECT ASCII
+        LD B, A
+        LD A, D         ;IS SHIFT KEY PRESSED
+        OR A
+        JR NZ, K_ALPEND
+        LD HL, K_SFTABLE ;GET SHIFT VALUE FROM SHIFT TABLE
+        LD A, B
+        SUB 2CH         ;ADJUST FOR INDEXING
+        ADD A, L
+        JR NC, $ + 3
+        INC H
+        LD L, A
+        LD A, (HL)      ;SAVE SHIFTED KEY
+        JR K_KEYEND     ;EXIT CLEANLY
+; CHARACTERS TO DISPLAY IF SHIFT IS PRESSED.  NOTE 22H IS DOUBLE QUOTE
+; AND IS SEPARATE AS DOUBLE QUOTE AFFECTS THE COMIPLER
+K_SFTABLE:	
+        DB '<_>?)!@#$%^&*( : +|', 22H  
+
+K_ALPHA:                ;HANDLE ALPHABET CHARACTERS A-Z
+        CP 24H
+        JR C, K_KEYEND  ;IF UNDER 24 EXIT
+        ADD A, 3DH      ;INDEX KEY TO GET CORRECT ASCII
+        LD B, A
+        LD A, (V_KEYCAPS)
+        OR A            ;IS CAPS LOCK SET OR SHIFT PRESSED?
+        JR NZ, K_UPPER  ;YES, MAKE KEY UPPER CASE
+        LD A, D
+        OR A
+        JR NZ, K_ALPEND
+K_UPPER:	
+        LD A, B
+        SUB 20H         ;SUBTRACT 20H TO ADJUST FOR UPPER CASE
+        JR K_KEYEND
+K_ALPEND:	
+        LD A, B
+        
+K_KEYEND:	
+        LD E, A 	;SAVE MODIFIED KEY
+        CP A 		;SET ZERO FLAG FOR SUCESSFUL KEY PRESS
+        RET
+        
+        
+; KEYSCAN routine for the TEC Keyboard
+; ------------------------------------
+;
+; Register B is used to cycle a Low from A8 up through A15. A low indicates the Row is being scanned
+; Register C is used only to set the Input port which is $FE
+; Register E returns the key pressed, or if two keys are pressed the second key and
+;            FFH if no key pressed
+; Register D returns the second key pressed or FFH if no second key
+;
+; Returns values:
+;   D : Shift = 00H
+;       Ctrl  = 01H
+;       Fn    = 02H
+;       No second key = FFH
+;   E : Key pressed value between 00H-3FH (0-64)
+;   Zero Flag : SET   = key press or combination valid
+;             : UNSET = key press or combination invalid
+;
+        
+KEYSCAN:	
+        LD L, 0FFH 	;Row value accumulator. Add 8 for each ROW
+        LD DE, 0FFFFH 	;Return Values if no key is pressed
+        LD BC, 0FEFEH 	;Port = C, A8-A15 = B. B loaded with only A8 = 0 to start.
+        
+KLINE:	
+        IN A, (C) 	;Check data bus for Port C and high address B
+        CPL 		;Invert to check for zero
+        AND $FF 	;Masking of bits would happen here, but we use all 8
+        JR Z, KDONE 	;If Zero, no key press for Address line
+        LD H, A 	;Save key(s) pressed data in H
+        LD A, L 	;Load A with the current ROW count*8
+KBITS:	
+        INC A 		;Add one until data bit found
+        SRL H 		;Shift H right until bit is detected
+        JR NC, KBITS 	;If Carry is not set, shift again
+        LD D, E 	;Load first key detected into D
+        LD E, A 	;Store key detected
+        JR NZ, KBITS 	;Keep going until all bits are checked.
+KDONE:	
+        LD A, 08H 	;
+        ADD A, L 	;Increase L by 8 for each ROW checked
+        LD L, A
+        RLC B 		;Move to next address line
+        JR C, KLINE 	;if more address lines needed repeat key check
+        
+        LD A, E 	;Check for any key press
+        CP 40H 		;Is it a valid key?
+        RET NC 		;No, exit with Zero flag false
+        
+        LD A, D 	;Check if 1 or two key pressed
+        INC A
+        RET Z 		;If one key exit, D=FF, E=key
+;Check for Shift/Ctrl/Fn keys pressed
+        DEC A
+        RET Z           ;EXIT ZERO IF SHIFT
+        DEC A
+        RET Z           ;EXIT ZERO IF CONTROL
+        DEC A
+        RET             ;EXIT ZERO IF FUNCTION OR NON ZERO IF ANYTHING ELSE
+
+; JOYSTICK MOVEMENT DETECTION
+; ---------------------------
+;
+; This routine detects movement or buttons pressed on the Joystick ports
+; A Bit or Bits are set depending on which movement or button has been pressed.
+; Multiple bits can be set at the same time.
+;
+; Returns values:
+;   D : Joystick 1
+;   E : Joystick 2
+;       No detection returns a zero in D or E
+;
+JOY_PROCESS:
+        LD BC, 0F7FEH 	;Port = C, A8-A15 = B. B loaded with only A11 = 0 to start.
+        IN A, (C) 	;Check data bus for Port C and high address B
+        CPL 		;Invert to signify joystick action
+        LD D, A         ;Store Joystick 1 in D
+        RLC B           ;Rotate to Joystick 2
+        IN A, (C) 	;Check data bus for Port C and high address B
+        CPL 		;Invert to signify joystick action
+        LD E, A         ;Store Joystick 2 in E
+        RET             ;Exit with DE set
+
+;RAM
+;-----
+; Place these lines somewhere in RAM.  Use the ORG directive if necessary
+;
+V_KEYAUTO:	DB 00H,00H 		;Timer information for auto repeat
+V_KEYCAPS:	DB 00H     		;Key Caps pressed flag
+V_KEY:		DB 00H,00H 		;Key pressed value

@@ -1,0 +1,198 @@
+; TEXT ADVENTURE INTEFACE FILE FOR THE TEC KEYBOARD
+; -------------------------------------------------
+; By B. Chiha
+;
+; This is the main application to handle interation with the
+; Text Adventure game with the full keyboard for the  Ready? Z80
+; Youtube channel.
+;
+; It essential has two components.  Read and Write.
+;
+; Read...
+; section waits for data to be sent from the computer via the
+; serial cable.  This data is specifically for displaying
+; on the LCD screen on the TEC.  It contains information on the
+; Exits of the location the player is at, The current Score and
+; the players current inventory. Once all the data is recived
+; it moves to the Write section
+;
+; Write...
+; section call the KEY_PROCESS routine for the TEC Keyboard.
+; If the key is valid and is an Up or Down arrow, it will
+; scroll the LCD display.  If the key isn't a SHIFT, CTRL
+; or FN then it is sent to the Adventure Game via the serial
+; port.  If the key pressed in Enter (0DH), then the routine
+; exits and starts the Read section again.
+        
+; Constants
+B4800:	EQU 0x1B 		;Baud 4800 delay speed
+DSCAN:	EQU 0x01 		;Display Cathode Driver Latch
+BAUD:	EQU 08A4H 		;Baud RAM variable
+TXCHAR:	EQU 004AH 		;Transmit Routine
+RXCHAR:	EQU 004DH 		;Receive Routine
+BITIME:	EQU 0053H 		;Bit Time Delay Routine
+LCD_IR:	EQU 04H         ;LCD Information Register Port
+LCD_DR:	EQU 84H         ;LCD Data Register Port
+LCDOFF:	EQU 0821H       ;LCD Off variable for BMON
+LCDPTR:	EQU 3000H       ;LCD Page Pointer
+LCDMEM:	EQU 3002H       ;LCD Display Data
+ROW1:	EQU 80H 		;LCD DDRAM Row 1 Start Address
+ROW2:	EQU 0C0H 		;LCD DDRAM Row 2 Start Address
+ROW3:	EQU 94H 		;LCD DDRAM Row 3 Start Address
+ROW4:	EQU 0D4H 		;LCD DDRAM Row 4 Start Address
+        
+        ORG 2000H       ;Start at first RAM location on the TEC-1F
+        
+INIT:
+; 		BMON config.  If using BMON or JMON need to set LCDOFF to FF
+;       To disable the Monitors LCD routine.
+        LD A, 0FFH
+        LD (LCDOFF), A 	;Disables LCD update from B/JMON
+        
+;LCD Reset Screen
+        RST 30H         ;Wait for LCD to be ready
+        LD A, 01H
+        OUT (LCD_IR), A ;Clear LCD Screen
+        
+;Set Baud if note already done
+        LD HL, B4800 	;Set Baud 4800
+        LD (BAUD), HL 	;Save the Baud rate in RAM
+        
+;Initialise the Serial Port
+        LD HL, 2000H 	;Power up delay
+        CALL BITIME     ;Wait
+        LD A, 40H
+        OUT (DSCAN), A 	;Make the Output Port high
+;Get LCD offset
+        LD HL, LCDMEM   ;Set LCDPTR to start of LCDMEM
+        LD (LCDPTR), HL
+        
+START:	
+        LD HL, LCDMEM   ;Load HL with LCD Memory location
+GETRECV:	
+        CALL RXCHAR     ;Wait for Byte to be received from Computer
+        LD (HL), A      ;Save it in LCD Memory
+        INC HL          ;Move to next LCD Memory location
+        CP 0FFH         ;Is it End of String?
+        JR NZ, GETRECV  ;No, Get more bytes
+        LD (HL), A      ;Save EOS in LCD Memory
+        
+DISPLCD:	
+;Display Bytes Received
+        RST 30H         ;Wait for LCD to be ready
+        LD A, 01H 		;Clear LCD screen
+        OUT (LCD_IR), A
+        
+        LD HL, (LCDPTR) ;Find LCD Page to display
+        LD DE, LCDROWS  ;Store DE the LCD Row indexing
+        
+SETROW:	
+        RST 30H         ;Wait for LCD to be ready
+        LD A, (DE)      ;Get Current LCD Row
+        OR A
+        JR Z, GETKEY 	;No more lines to print
+        OUT (LCD_IR), A ;Set LCD cursor to start of ROW
+        INC DE          ;Move to next row
+DRAWLCD:	
+        RST 30H         ;Wait for LCD to be ready
+        LD A, (HL)      ;Get ASCII for LCD Memory
+        INC HL          ;Move to next LCD Memory
+        CP 0FFH         ;Is it EOS?
+        JR Z, GETKEY    ;Yes, Move to Get Key
+        CP '\n'         ;Is it Carriage Return?
+        JR Z, SETROW    ;Yes, Move to next LCD Row
+        OUT (LCD_DR), A ;Otherwise, just output the ASCII to the LCD
+        JR DRAWLCD      ;Loop until all 4 rows are done.
+
+; Handle the Key pressed on the Keyboard
+GETKEY:	
+        CALL KEY_PROCESS ;Call the Keyboard Handler
+        JR NZ, GETKEY    ;Keep looking if key is invalid,
+        LD A, E          ;Get key pressed
+        CP 04H           ;Is it Down Arrow?
+        JR Z, MOVEPAGE_DN ;Yes, Page down the LCD
+        CP 03H           ;Is it Up Arrow?
+        JR Z, MOVEPAGE_UP ;Yes, Page up the LCD
+        JR C, GETKEY     ;Is it a Non printable, SHIFT, CTRL, or FN key?
+        CALL TXCHAR 	 ;Send ASCII Key to serial port
+        LD A, E          ;Is it a Carriage Return?
+        CP 0DH
+        JR Z, START      ;Yes, Loop to the Start
+        JR GETKEY        ;No, Get next Key
+
+; Routine To Move LCD up one page or down one page		
+MOVEPAGE_UP:	
+        CALL PAGEUP
+        JR DISPLCD
+MOVEPAGE_DN:	
+        CALL PAGEDOWN
+        JR DISPLCD
+        
+; Sets the LCD offset on a page down.  This works by counting 4 Carriage
+; Returns down or an EOS.  Then it sets the LCDPTR to the next page down if any
+PAGEDOWN:	
+        LD HL, (LCDPTR)
+        LD C, 04H
+NP1:	
+        LD A, (HL)
+        INC HL
+        CP 0FFH
+        RET Z
+        CP '\n'
+        JR NZ, NP1
+        DEC C
+        JR NZ, NP1
+        LD (LCDPTR), HL
+        RET
+        
+; Sets the LCD offset on a page up.  This works by counting 5 Carriage
+; Returns up or if no more pages upwards.  Then it sets the LCDPTR to the 
+; previous page if any.
+PAGEUP:	
+        LD DE, LCDMEM
+        LD HL, (LCDPTR)
+        LD C, 05H
+NP2:	
+        LD A, (HL)
+        OR A
+        SBC HL, DE
+        ADD HL, DE
+        JR Z, NP3
+        DEC HL
+        CP '\n'
+        JR NZ, NP2
+        DEC C
+        JR NZ, NP2
+        INC HL
+        INC HL
+NP3:	
+        LD (LCDPTR), HL
+        RET
+        
+
+; Here is a sample of TEXT that could be at LCDMEM
+
+; Exits: E, W\n
+; --------------------\n
+; \n
+; Score: 30\n
+
+; Inventory:\n
+; A DIAMOND RING\n
+; (TREASURE), AN EBONY\n
+; STATUE (TREASURE), A\n
+
+; GOLD CANDLESTICK\n
+; (TREASURE), A BOX OF\n
+; MATCHES, A VACUUM\n
+; CLEANER, BATTERIES, \n
+
+; AN AEROSOL CAN, A\n
+; CANDLE\xFF
+
+; LCD Rows start address		
+LCDROWS:	
+        DB     ROW1,ROW2,ROW3,ROW4,00H
+
+; Include the Keyboard Processing Handler code ad the end.
+        .include full_keyboard.z80
