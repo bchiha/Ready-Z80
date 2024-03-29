@@ -1,0 +1,1235 @@
+0000                             ; Celular Automata for the Z80
+0000                             ; ----------------------------
+0000                             ; Generic Z80 Version.
+0000                             ; For Z80 computers with a Graphical 128x64 LCD Board.
+0000                             ; Note: Modify "lcd_128x64_glib.z80" to suit the hardward ports
+0000                             ; -------------------
+0000                             ; Code written by Brian Chiha
+0000                             ; 
+0000                             ; In mathematics and computability theory, an elementary cellular
+0000                             ; automaton is a one-dimensional cellular automaton where there are
+0000                             ; two possible states (labeled 0 and 1) and the rule to determine
+0000                             ; the state of a cell in the next generation depends only on the
+0000                             ; current state of the cell and its two immediate neighbors.
+0000                             ; 
+0000                             ; Consider a one dimensional array where each cell can contain only
+0000                             ; two values, 1 or 0.  A cell in a one dimentional arrays will have
+0000                             ; two neighbors.  One to the left and one to the right.  Considering
+0000                             ; the three cells with either 1 or 0 states, there are 2^3 or 8
+0000                             ; different combinations.  The combination are:
+0000                             ; 
+0000                             ;           111, 110, 101, 100, 011, 010, 001, 000
+0000                             ;  RULE 6C   0    1    1    0    1    1    0    0
+0000                             ; 
+0000                             ; For the next generation of cells, a rule can be applied based on
+0000                             ; one of the 8 combinations above.  If 6C is the rule, its bits
+0000                             ; can represent the next generation.  IE: if the three cells are
+0000                             ; 011 then the next cell will be a 1.  And if the cells are 100,
+0000                             ; then the next cell will be a 0.  A rule can be from 0 to 255.
+0000                             ; 
+0000                             ; Finally, if the first one dimentional array has all values set
+0000                             ; to 0 except its center cell set to 1.  When the rule is applied
+0000                             ; for each generation, patterns emerge.
+0000                             ; LCD Graphics Library Functions used
+0000                G_INIT_LCD:   EQU   GLIB_ORG   ;Relative offset for Glib jump table
+0000                G_SET_GR_MODE:   EQU   GLIB_ORG+12   
+0000                G_DRAW_PIXEL:   EQU   GLIB_ORG+27   
+0000                G_PLOT_TO_LCD:   EQU   GLIB_ORG+36   
+0000                             ; Constants
+0000                C_MAX_X:   EQU   128   
+0000                C_MAX_Y:   EQU   64   
+0000                             ; RAM Variables (Modify START_ADR to suit.)
+0000                START_ADR:   EQU   4000H   ;Start location of code
+0000                RULE:     EQU   START_ADR + 08FFH   ;Rule value 0-255
+0000                CELLS_CUR:   EQU   START_ADR + 0900H   ;Current generation (128 bytes)
+0000                CELLS_NXT:   EQU   START_ADR + 0980H   ;Next generation
+4000                          .ORG   START_ADR   ;Start Location
+4000                INIT:        
+4000   3E 96                  LD   A,96H   ;Start Rule (Had to pick one!)
+4002   32 FF 48               LD   (RULE),A   ;Save the Rule
+4005                             ;Set up Graphics LCD
+4005   CD 7C 40               CALL   G_INIT_LCD   ;Initialise GLCD
+4008   CD 88 40               CALL   G_SET_GR_MODE   ;Set to Graphics Mode
+400B                START:       
+400B                             ;Clear Screen here if needed....
+400B                             ;Initialise the first row of cells to 0
+400B   21 00 49               LD   HL,CELLS_CUR   ;Set first cell to 0
+400E   11 01 49               LD   DE,CELLS_CUR+1   ;And use LDIR to copy
+4011   AF                     XOR   A   ;the first cell to the
+4012   77                     LD   (HL),A   ;next, 127 times
+4013   01 7F 00               LD   BC,C_MAX_X-1   
+4016   ED B0                  LDIR      
+4018                             ;Set the middle cell (or near to it), to 1
+4018   3E 01                  LD   A,1   
+401A   32 40 49               LD   (CELLS_CUR+C_MAX_X/2),A   ;set cell to 1
+401D                             ;Set C to the first ROW which is 0
+401D   0E 00                  LD   C,00H   
+401F                             ;Draw the 1-D array to the current ROM
+401F                DRAW_CELLS:      
+401F   79                     LD   A,C   ;Get current ROW
+4020   FE 40                  CP   C_MAX_Y   ;Is it at the last row?
+4022   28 4F                  JR   Z,FINISH   ;Yes, jump to finish
+4024   11 00 49               LD   DE,CELLS_CUR   ;No, then set DE to current cells array
+4027   06 00                  LD   B,00H   ;Set COLUMN to 0
+4029                NEW_COLUMN:      
+4029   1A                     LD   A,(DE)   ;Get value stored in array
+402A   FE 01                  CP   1   ;Is current cell a 1?
+402C   20 03                  JR   NZ,SKIP_DRAW   ;No, skip drawing a pixel
+402E   CD 97 40               CALL   G_DRAW_PIXEL   ;Draw pixel at Column/Row
+4031                SKIP_DRAW:      
+4031   13                     INC   DE   ;Move to next cell
+4032   04                     INC   B   ;Increment COLUMN position
+4033   78                     LD   A,B   ;Get new COLUMN
+4034   FE 80                  CP   C_MAX_X   ;Is it the last column?
+4036   20 F1                  JR   NZ,NEW_COLUMN   ;No, display next cell
+4038                             ;Calculate the next generation based on the three
+4038                             ;cells and the Rule.  Current Cell is an aligned table
+4038                             ;which makes it much easier to use.
+4038                CALC_NEXT:      
+4038   C5                     PUSH   BC   
+4039   21 00 49               LD   HL,CELLS_CUR   ;Point to start of cells array
+403C   11 80 49               LD   DE,CELLS_NXT   ;Load DE with Next Generation array
+403F   06 80                  LD   B,C_MAX_X   ;128 cells to calculate
+4041                NEXT_CELL:      
+4041   2D                     DEC   L   ;Move L back two bytes to
+4042   2D                     DEC   L   ;look at HL-1 first
+4043                             ;get HL-1
+4043   CD 77 40               CALL   GET_CELL   ;Get value in cell at "cell-1"
+4046   87                     ADD   A,A   ;Multiply by 4
+4047   87                     ADD   A,A   
+4048   4F                     LD   C,A   ;Save counter in C
+4049                             ;get HL
+4049   CD 77 40               CALL   GET_CELL   ;Get value in cell at "cell"
+404C   87                     ADD   A,A   ;Multiply by 2
+404D   81                     ADD   A,C   
+404E   4F                     LD   C,A   ;Add value to counter
+404F                             ;get HL+1
+404F   CD 77 40               CALL   GET_CELL   ;Get value in cell at "cell+1"
+4052   81                     ADD   A,C   
+4053   4F                     LD   C,A   ;Add value to counter
+4054                             ;C now stores the bit in the rule to use. 0-7
+4054   3A FF 48               LD   A,(RULE)   ;Get the rule
+4057   0C                     INC   C   ;Increment C to adjust for rotation loop
+4058                ROT_LOOP:      ;Put bit needed in Bit 0
+4058   0D                     DEC   C   ;Decrease counter
+4059   28 03                  JR   Z,ROT_DONE   ;if its zero, no more to do
+405B   0F                     RRCA      ;Rotate bits in rule to the right by 1
+405C   18 FA                  JR   ROT_LOOP   ;loop again until counter=0
+405E                ROT_DONE:      
+405E   E6 01                  AND   01H   ;Mask out all bits except Bit 0
+4060   12                     LD   (DE),A   ;Save value to Next Generation
+4061   13                     INC   DE   ;Move to next next generation cell
+4062   10 DD                  DJNZ   NEXT_CELL   ;Repeat for 128 cells
+4064                             ;Copy completed next generation cells to current cells
+4064                COPY_CELLS:      
+4064   11 00 49               LD   DE,CELLS_CUR   ;Use LDIR to copy 128 bytes from next
+4067   21 80 49               LD   HL,CELLS_NXT   ;to current cells array
+406A   01 80 00               LD   BC,C_MAX_X   
+406D   ED B0                  LDIR      
+406F   C1                     POP   BC   
+4070   0C                     INC   C   ;move to next ROW
+4071   18 AC                  JR   DRAW_CELLS   ;repeate until all generations done
+4073                             ;All pixels are plotted.  Display then to the GCLD and
+4073                             ;handle keypad input to select a new rule
+4073                FINISH:      
+4073   CD A0 40               CALL   G_PLOT_TO_LCD   ;Plot Graphics buffer to GLCD
+4076                             ;Add code here to customise Rule changes via keyboard
+4076                             ;Call the appropriate hardware method for your computer.
+4076                             ;Look at the TEC1G version for ideas on how to do this
+4076   C9                     RET      ;Just exit
+4077                             ;Get the cell value at HL+1 and adjust for boundry cells
+4077                GET_CELL:      
+4077   2C                     INC   L   ;increment L
+4078   CB BD                  RES   7,L   ;remove bit 7 to wrap around if overflow
+407A   7E                     LD   A,(HL)   ;Get value from HL
+407B   C9                     RET      
+407C                GLIB_ORG:      
+407C                             ; Graphics Libarary for the 128x64 LCD.  Modify this file to suit
+407C                             ; your hardware.  See file for instruction.  Default connections are:
+407C                             ; Instruction Port = 07H, Data Port = 87H, Parallel Mode.
+407C                             ; Graphical LCD 128 x 64 Library
+407C                             ; ------------------------------
+407C                             ; By B. Chiha May-2023
+407C                             ; 
+407C                             ; This is a native Z80 Graphics library to be used with 128x64 Graphical LCD Screens
+407C                             ; 
+407C                             ; There are a few variants of these LCD screens, but they must all must use the ST7920
+407C                             ; LCD Controller.  The LCD Screen that I used is the QC12864B.  This screen has two
+407C                             ; ST7921 Panels (128 x 32) stacked one above the other.  Other LCD boards might not do
+407C                             ; this.  If so the PLOT_TO_LCD function will need to be modified. (future work)
+407C                             ; 
+407C                             ; These screens have DDRAM (Graphics) and CGRAM (Text) areas.  Both RAM areas can
+407C                             ; be displayed at the same time.
+407C                             ; 
+407C                             ; The Pinout for the QC12864B board is as follows:
+407C                             ; 
+407C                             ; Pin	Name	Desc                    Serial  Parallel
+407C                             ; ---   ----    -------------           ------  -------------
+407C                             ; 1     VSS     Ground                  GND     GND
+407C                             ; 2     VDD     Power                   5v      5v
+407C                             ; 3     V0      Contrast                N/A     N/A
+407C                             ; 4     D/I     IR/DR (CS)              5v      A7
+407C                             ; 5     R/W     R/W (SID)               D0      RD (inverted)
+407C                             ; 6     E       Enable (SCLK)           D1      Port 7 (inverted)
+407C                             ; 7     DB0     Data                    N/A     D0
+407C                             ; 8     DB1     Data                    N/A     D1
+407C                             ; 9     DB2     Data                    N/A     D2
+407C                             ; 10    DB3     Data                    N/A     D3
+407C                             ; 11    DB4     Data                    N/A     D4
+407C                             ; 12    DB5     Data                    N/A     D5
+407C                             ; 13    DB6     Data                    N/A     D6
+407C                             ; 14    DB7     Data                    N/A     D7
+407C                             ; 15    PSB     Serial/Para             GND     5v
+407C                             ; 16    NC
+407C                             ; 17    RST     Reset                   RST     RST
+407C                             ; 18    VEE     LCD Drive               N/A     N/A
+407C                             ; 19    A       Backlight               5v/NC   5v/NC
+407C                             ; 20    K       Backlight               GND/NC  GND/NC
+407C                             ; 
+407C                             ; 
+407C                             ; Modifiable values.  Thse three values can be modified to suit your own set up
+407C                             ; LCD_IR and LCD_DR are the output ports to send an Instruction or Data value.
+407C                             ; V_DELAY_US is the minimum delay needed for a command to be processed by the
+407C                             ; LCD board.  If only some of the data is being sent, make this value larger
+407C                             ;Port 7 on TEC is connected to LCD Enable (Pin 6)
+407C                             ;A7 is connected to Register select (Pin 4).  (A7=0 for Instruction, A7=1 for Data)
+407C                LCD_IR:   EQU   07H   ;Instruction Register
+407C                LCD_DR:   EQU   87H   ;Data Register (A7)
+407C                LCD_SER:   EQU   07H   ;Serial Port if used
+407C                V_DELAY_US:   EQU   0004H   ;Delay for 76us on your system
+407C                             ;Serial or Parallel communications to the LCD Screen.  Comment one of
+407C                             ;the labels below based on the LCD connections. 00H = FALSE, 01H = TRUE
+407C                COMMS_MODE:   EQU   00H   ;Using PARALLEL Data connection
+407C                             ;COMMS_MODE: EQU 01H     ;Using SERIAL Data connection
+407C                             ; Dont need to modify anything else below.
+407C                SER_BT:   EQU   11111000B   ;Serial Synchronisation Byte
+407C                             ; Jump Table
+407C                             ;-----------
+407C   C3 C4 40               JP   INIT_LCD   ;Initalise the LCD
+407F   C3 D9 40               JP   CLEAR_GBUF   ;Clear the Graphics Buffer
+4082   C3 E7 40               JP   CLEAR_GR_LCD   ;Clear the Graphics LCD Screen
+4085   C3 0E 41               JP   CLEAR_TXT_LCD   ;Clear the Text LCD Screen
+4088   C3 25 41               JP   SET_GR_MODE   ;Set Graphics Mode
+408B   C3 2F 41               JP   SET_TXT_MODE   ;Set Text Mode
+408E   C3 34 41               JP   DRAW_BOX   ;Draw a rectangle between two points
+4091   C3 6F 41               JP   DRAW_LINE   ;Draw a line between two points
+4094   C3 1A 42               JP   DRAW_CIRCLE   ;Draw a circle from Mid X,Y to Radius
+4097   C3 EF 42               JP   DRAW_PIXEL   ;Draw one pixel at X,Y
+409A   C3 5F 41               JP   FILL_BOX   ;Draw a filled rectangle between two points
+409D   C3 E1 42               JP   FILL_CIRCLE   ;Draw a filled circle from Mid X,Y to Radius
+40A0   C3 40 43               JP   PLOT_TO_LCD   ;Display the Graphics Buffer to the LCD Screen
+40A3   C3 72 43               JP   PRINT_STRING   ;Print Text on the screen in a given row
+40A6   C3 94 43               JP   PRINT_CHARS   ;Print Characters on the screen in a given row and column
+40A9   C3 B3 43               JP   DELAY_US   ;Microsecond delay for LCD updates
+40AC   C3 B6 43               JP   DELAY_MS   ;Millisecond delay for LCD updates
+40AF   C3 BC 43               JP   SET_BUF_CLEAR   ;Clear the Graphics buffer on after Plotting to the screen
+40B2   C3 C4 43               JP   SET_BUF_NO_CLEAR   ;Retain the Graphics buffer on after Plotting to the screen
+40B5   C3 00 43               JP   CLEAR_PIXEL   ;Remove a Pixel at X,Y
+40B8   C3 12 43               JP   FLIP_PIXEL   ;Flip a Pixel On/Off at X,Y
+40BB   C3 C9 43               JP   LCD_INST   ;Send a parallel or serial instruction to LCD
+40BE   C3 CE 43               JP   LCD_DATA   ;Send a parallel or serial datum to LCD
+40C1   C3 E1 43               JP   SER_SYNC   ;Send serial synchronise byte to LCD
+40C4                             ; Initialise LCD
+40C4                INIT_LCD:      
+40C4   21 F9 43               LD   HL,INIT_BASIC   ;POINT HL TO LCD INITIALIZE TABLE
+40C7   06 04                  LD   B,04H   ;B=4 BYTES
+40C9                NEXT_CMD:      
+40C9   7E                     LD   A,(HL)   
+40CA   CD C9 43               CALL   LCD_INST   
+40CD   23                     INC   HL   
+40CE   10 F9                  DJNZ   NEXT_CMD   
+40D0   11 40 01               LD   DE,0140H   ;1.6 ms
+40D3   CD B6 43               CALL   DELAY_MS   
+40D6   CD E7 40               CALL   CLEAR_GR_LCD   
+40D9                             ; Clears the Graphics Memory Buffer
+40D9                CLEAR_GBUF:      
+40D9   21 FD 43               LD   HL,GBUF   
+40DC   11 FE 43               LD   DE,GBUF + 1   
+40DF   AF                     XOR   A   
+40E0   77                     LD   (HL),A   
+40E1   01 FF 03               LD   BC,03FFH   
+40E4   ED B0                  LDIR      
+40E6   C9                     RET      
+40E7                             ; Clears the Graphics LCD Buffer
+40E7                CLEAR_GR_LCD:      
+40E7   CD 25 41               CALL   SET_GR_MODE   
+40EA   0E 00                  LD   C,00H   
+40EC                CLR_X:       
+40EC   3E 80                  LD   A,80H   
+40EE   B1                     OR   C   
+40EF   CD C9 43               CALL   LCD_INST   
+40F2   3E 80                  LD   A,80H   
+40F4   CD C9 43               CALL   LCD_INST   
+40F7   3E 02                  LD   A,02H   
+40F9   CD E1 43               CALL   SER_SYNC   ;Data Block Sync
+40FC   AF                     XOR   A   ;Clear Byte
+40FD   06 10                  LD   B,10H   
+40FF                CLR_Y:       
+40FF   CD CE 43               CALL   LCD_DATA   
+4102   CD CE 43               CALL   LCD_DATA   
+4105   10 F8                  DJNZ   CLR_Y   
+4107   0C                     INC   C   
+4108   79                     LD   A,C   
+4109   FE 20                  CP   20H   
+410B   20 DF                  JR   NZ,CLR_X   
+410D   C9                     RET      
+410E                             ; Clears the ASCII Text LCD
+410E                CLEAR_TXT_LCD:      
+410E   CD 2F 41               CALL   SET_TXT_MODE   
+4111   3E 80                  LD   A,80H   
+4113   CD C9 43               CALL   LCD_INST   
+4116   3E 02                  LD   A,02H   
+4118   CD E1 43               CALL   SER_SYNC   ;Data Block Sync
+411B   06 40                  LD   B,40H   
+411D                CLR_ROWS:      
+411D   3E 20                  LD   A," "   
+411F   CD CE 43               CALL   LCD_DATA   
+4122   10 F9                  DJNZ   CLR_ROWS   
+4124   C9                     RET      
+4125                             ; Set Graphics Mode
+4125                SET_GR_MODE:      
+4125   3E 34                  LD   A,34H   
+4127   CD C9 43               CALL   LCD_INST   
+412A   3E 36                  LD   A,36H   
+412C   C3 C9 43               JP   LCD_INST   
+412F                             ; Set Text Mode
+412F                SET_TXT_MODE:      
+412F   3E 30                  LD   A,30H   
+4131   C3 C9 43               JP   LCD_INST   
+4134                             ;Draw Box
+4134                             ;Inputs: BC = X0,Y0
+4134                             ;        DE = X1,Y1
+4134                             ;Destroys: HL
+4134                DRAW_BOX:      
+4134   C5                     PUSH   BC   
+4135                TOP:         
+4135   CD EF 42               CALL   DRAW_PIXEL   
+4138   7A                     LD   A,D   
+4139   04                     INC   B   
+413A   B8                     CP   B   
+413B   30 F8                  JR   NC,TOP   
+413D   C1                     POP   BC   
+413E   C5                     PUSH   BC   
+413F   4B                     LD   C,E   
+4140                BOTTOM:      
+4140   CD EF 42               CALL   DRAW_PIXEL   
+4143   7A                     LD   A,D   
+4144   04                     INC   B   
+4145   B8                     CP   B   
+4146   30 F8                  JR   NC,BOTTOM   
+4148   C1                     POP   BC   
+4149   C5                     PUSH   BC   
+414A                LEFT:        
+414A   CD EF 42               CALL   DRAW_PIXEL   
+414D   7B                     LD   A,E   
+414E   0C                     INC   C   
+414F   B9                     CP   C   
+4150   30 F8                  JR   NC,LEFT   
+4152   C1                     POP   BC   
+4153   C5                     PUSH   BC   
+4154   42                     LD   B,D   
+4155                RIGHT:       
+4155   CD EF 42               CALL   DRAW_PIXEL   
+4158   7B                     LD   A,E   
+4159   0C                     INC   C   
+415A   B9                     CP   C   
+415B   30 F8                  JR   NC,RIGHT   
+415D   C1                     POP   BC   
+415E   C9                     RET      
+415F                             ;Fill Box
+415F                             ;Draws vertical lines from X0,Y0 to X0,Y1 and increase X0 to X1 until X0=X1
+415F                             ;Inputs: BC = X0,Y0
+415F                             ;        DE = X1,Y1
+415F                             ;Destroys: HL
+415F                FILL_BOX:      
+415F   C5                     PUSH   BC   
+4160                NEXT_PIXEL:      
+4160   CD EF 42               CALL   DRAW_PIXEL   
+4163   7B                     LD   A,E   
+4164   0C                     INC   C   
+4165   B9                     CP   C   
+4166   30 F8                  JR   NC,NEXT_PIXEL   
+4168   C1                     POP   BC   
+4169   7A                     LD   A,D   
+416A   04                     INC   B   
+416B   B8                     CP   B   
+416C   30 F1                  JR   NC,FILL_BOX   
+416E   C9                     RET      
+416F                             ;Draw a line between two points using Bresenham Line Algorithm
+416F                             ; void plotLine(int x0, int y0, int x1, int y1)
+416F                             ; {
+416F                             ;    int dx =  abs(x1-x0), sx = x0<x1 ? 1 : -1;
+416F                             ;    int dy = -abs(y1-y0), sy = y0<y1 ? 1 : -1;
+416F                             ;    int err = dx+dy, e2; /* error value e_xy */
+416F                             ;    for(;;){  /* loop */
+416F                             ;       setPixel(x0,y0);
+416F                             ;       if (x0==x1 && y0==y1) break;
+416F                             ;       e2 = 2*err;
+416F                             ;       if (e2 >= dy) 00bbIGVyciArPSBkeTsgeDAgKz0gc3g7IA== /* e_xy+e_x > 0 */
+416F                             ;       if (e2 <= dx) 00bbIGVyciArPSBkeDsgeTAgKz0gc3k7IA== /* e_xy+e_y < 0 */
+416F                             ;    }
+416F                             ; }
+416F                             ;Inputs: BC = X0,Y0
+416F                             ;        DE = X1,Y1
+416F                DRAW_LINE:      
+416F                             ;check that points are in range
+416F   79                     LD   A,C   
+4170   FE 40                  CP   40H   
+4172   D0                     RET   NC   
+4173   78                     LD   A,B   
+4174   FE 80                  CP   80H   
+4176   D0                     RET   NC   
+4177   7B                     LD   A,E   
+4178   FE 40                  CP   40H   
+417A   D0                     RET   NC   
+417B   7A                     LD   A,D   
+417C   FE 80                  CP   80H   
+417E   D0                     RET   NC   
+417F                             ;sx = x0<x1 ? 1 : -1
+417F   26 01                  LD   H,01H   
+4181   78                     LD   A,B   
+4182   BA                     CP   D   
+4183   38 02                  JR   C,$ + 4   
+4185   26 FF                  LD   H,0FFH   
+4187   7C                     LD   A,H   
+4188   32 FF 47               LD   (SX),A   
+418B                             ;sy = y0<y1 ? 1 : -1
+418B   26 01                  LD   H,01H   
+418D   79                     LD   A,C   
+418E   BB                     CP   E   
+418F   38 02                  JR   C,$ + 4   
+4191   26 FF                  LD   H,0FFH   
+4193   7C                     LD   A,H   
+4194   32 00 48               LD   (SY),A   
+4197   ED 53 FD 47            LD   (ENDPT),DE   
+419B                             ;dx =  abs(x1-x0)
+419B   C5                     PUSH   BC   
+419C   6A                     LD   L,D   
+419D   26 00                  LD   H,0   
+419F   48                     LD   C,B   
+41A0   06 00                  LD   B,0   
+41A2   B7                     OR   A   
+41A3   ED 42                  SBC   HL,BC   
+41A5   CD 10 42               CALL   ABSHL   
+41A8   22 01 48               LD   (DX),HL   
+41AB   C1                     POP   BC   
+41AC                             ;dy = -abs(y1-y0)
+41AC   C5                     PUSH   BC   
+41AD   6B                     LD   L,E   
+41AE   26 00                  LD   H,0   
+41B0   06 00                  LD   B,0   
+41B2   B7                     OR   A   
+41B3   ED 42                  SBC   HL,BC   
+41B5   CD 10 42               CALL   ABSHL   
+41B8   AF                     XOR   A   
+41B9   95                     SUB   L   
+41BA   6F                     LD   L,A   
+41BB   9F                     SBC   A,A   
+41BC   94                     SUB   H   
+41BD   67                     LD   H,A   
+41BE   22 03 48               LD   (DY),HL   
+41C1   C1                     POP   BC   
+41C2                             ;err = dx+dy,
+41C2   ED 5B 01 48            LD   DE,(DX)   
+41C6   19                     ADD   HL,DE   
+41C7   22 05 48               LD   (ERR),HL   
+41CA                LINE_LOOP:      
+41CA                             ;setPixel(x0,y0)
+41CA   CD EF 42               CALL   DRAW_PIXEL   
+41CD                             ;if (x0==x1 && y0==y1) break;
+41CD   3A FE 47               LD   A,(ENDPT + 1)   
+41D0   B8                     CP   B   
+41D1   20 05                  JR   NZ,$ + 7   
+41D3   3A FD 47               LD   A,(ENDPT)   
+41D6   B9                     CP   C   
+41D7   C8                     RET   Z   
+41D8                             ;e2 = 2*err;
+41D8   2A 05 48               LD   HL,(ERR)   
+41DB   29                     ADD   HL,HL   ;E2
+41DC                             ;if (e2 >= dy)  err += dy; x0 += sx;
+41DC   ED 5B 03 48            LD   DE,(DY)   
+41E0   B7                     OR   A   
+41E1   ED 52                  SBC   HL,DE   
+41E3   19                     ADD   HL,DE   
+41E4   FA F5 41               JP   M,LL2   
+41E7   E5                     PUSH   HL   
+41E8   2A 05 48               LD   HL,(ERR)   
+41EB   19                     ADD   HL,DE   
+41EC   22 05 48               LD   (ERR),HL   
+41EF   3A FF 47               LD   A,(SX)   
+41F2   80                     ADD   A,B   
+41F3   47                     LD   B,A   
+41F4   E1                     POP   HL   
+41F5                LL2:         
+41F5                             ;if (e2 <= dx)  err += dx; y0 += sy;
+41F5   ED 5B 01 48            LD   DE,(DX)   
+41F9   B7                     OR   A   
+41FA   ED 52                  SBC   HL,DE   
+41FC   19                     ADD   HL,DE   
+41FD   28 03                  JR   Z,LL3   
+41FF   F2 CA 41               JP   P,LINE_LOOP   
+4202                LL3:         
+4202   2A 05 48               LD   HL,(ERR)   
+4205   19                     ADD   HL,DE   
+4206   22 05 48               LD   (ERR),HL   
+4209   3A 00 48               LD   A,(SY)   
+420C   81                     ADD   A,C   
+420D   4F                     LD   C,A   
+420E   18 BA                  JR   LINE_LOOP   
+4210                ABSHL:       
+4210   CB 7C                  BIT   7,H   
+4212   C8                     RET   Z   
+4213   AF                     XOR   A   
+4214   95                     SUB   L   
+4215   6F                     LD   L,A   
+4216   9F                     SBC   A,A   
+4217   94                     SUB   H   
+4218   67                     LD   H,A   
+4219   C9                     RET      
+421A                             ;Draw a circle from a midpoint to a radius using Bresenham Line Algorithm
+421A                             ; void plotCircle(int xm, int ym, int r)
+421A                             ; {
+421A                             ;    int x = -r, y = 0, err = 2-2*r, i = 0; /* II. Quadrant */
+421A                             ;    printf("Midpoint = (%X,%X), Radius = %X\n", xm, ym, r);
+421A                             ;    do {
+421A                             ;       printf("(%X,%X) ", xm-x, ym+y); /*   I. Quadrant */
+421A                             ;       printf("(%X,%X) ", xm-y, ym-x); /*  II. Quadrant */
+421A                             ;       printf("(%X,%X) ", xm+x, ym-y); /* III. Quadrant */
+421A                             ;       printf("(%X,%X) ", xm+y, ym+x); /*  IV. Quadrant */
+421A                             ;       r = err;
+421A                             ;       if (r <= y) err += ++y*2+1;           /* e_xy+e_y < 0 */
+421A                             ;       if (r > x || err > y) err += ++x*2+1; /* e_xy+e_x > 0 or no 2nd y-step */
+421A                             ;       printf("x = %d, r = %d, y = %d, err =%d\n", x, r, y, err);
+421A                             ;    } while (x < 0);
+421A                             ; }
+421A                             ;Inputs BC = xm,ym (Midpoint)
+421A                             ;       E = radius
+421A                DRAW_CIRCLE:      
+421A                             ;   int x = -r, err = 2-2*r; /* II. Quadrant */
+421A   AF                     XOR   A   
+421B   93                     SUB   E   
+421C   32 FF 47               LD   (SX),A   ;x
+421F                             ;   y = 0
+421F   AF                     XOR   A   
+4220   32 00 48               LD   (SY),A   ;y
+4223                             ;   RAD = r
+4223   16 00                  LD   D,00H   
+4225   7B                     LD   A,E   
+4226   ED 53 07 48            LD   (RAD),DE   ;r
+422A                             ;   err = 2-2*r
+422A   EB                     EX   DE,HL   
+422B   29                     ADD   HL,HL   
+422C   EB                     EX   DE,HL   
+422D   21 02 00               LD   HL,0002H   
+4230   B7                     OR   A   
+4231   ED 52                  SBC   HL,DE   ;err
+4233   22 05 48               LD   (ERR),HL   
+4236                CIRCLE_LOOP:      
+4236                             ;       setPixel(xm-x, ym+y); /*   I. Quadrant */
+4236   C5                     PUSH   BC   
+4237   3A FF 47               LD   A,(SX)   
+423A   ED 44                  NEG      
+423C   80                     ADD   A,B   
+423D   47                     LD   B,A   
+423E   3A 00 48               LD   A,(SY)   
+4241   81                     ADD   A,C   
+4242   4F                     LD   C,A   
+4243   CD EF 42               CALL   DRAW_PIXEL   
+4246   C1                     POP   BC   
+4247                             ;       setPixel(xm+x, ym-y); /* III. Quadrant */
+4247   C5                     PUSH   BC   
+4248   3A FF 47               LD   A,(SX)   
+424B   80                     ADD   A,B   
+424C   47                     LD   B,A   
+424D   3A 00 48               LD   A,(SY)   
+4250   ED 44                  NEG      
+4252   81                     ADD   A,C   
+4253   4F                     LD   C,A   
+4254   CD EF 42               CALL   DRAW_PIXEL   
+4257   C1                     POP   BC   
+4258                             ;       setPixel(xm-y, ym-x); /*  II. Quadrant */
+4258   C5                     PUSH   BC   
+4259   3A 00 48               LD   A,(SY)   
+425C   ED 44                  NEG      
+425E   80                     ADD   A,B   
+425F   47                     LD   B,A   
+4260   3A FF 47               LD   A,(SX)   
+4263   ED 44                  NEG      
+4265   81                     ADD   A,C   
+4266   4F                     LD   C,A   
+4267   CD EF 42               CALL   DRAW_PIXEL   
+426A   C1                     POP   BC   
+426B                             ;       setPixel(xm+y, ym+x); /*  IV. Quadrant */
+426B   C5                     PUSH   BC   
+426C   3A 00 48               LD   A,(SY)   
+426F   80                     ADD   A,B   
+4270   47                     LD   B,A   
+4271   3A FF 47               LD   A,(SX)   
+4274   81                     ADD   A,C   
+4275   4F                     LD   C,A   
+4276   CD EF 42               CALL   DRAW_PIXEL   
+4279   C1                     POP   BC   
+427A                             ;       r = err;
+427A   2A 05 48               LD   HL,(ERR)   
+427D   22 07 48               LD   (RAD),HL   
+4280                             ;       if (r <= y) err += ++y*2+1;           /* e_xy+e_y < 0 */
+4280   3A 00 48               LD   A,(SY)   
+4283   5F                     LD   E,A   
+4284   16 00                  LD   D,0   
+4286   B7                     OR   A   
+4287   ED 52                  SBC   HL,DE   
+4289   19                     ADD   HL,DE   
+428A   28 03                  JR   Z,$ + 5   
+428C   F2 A2 42               JP   P,DS1   
+428F   3A 00 48               LD   A,(SY)   
+4292   3C                     INC   A   
+4293   32 00 48               LD   (SY),A   
+4296   87                     ADD   A,A   
+4297   3C                     INC   A   
+4298   5F                     LD   E,A   
+4299   16 00                  LD   D,0   
+429B   2A 05 48               LD   HL,(ERR)   
+429E   19                     ADD   HL,DE   
+429F   22 05 48               LD   (ERR),HL   
+42A2                             ;       if (r > x || err > y) err += ++x*2+1; /* e_xy+e_x > 0 or no 2nd y-step */
+42A2                DS1:         
+42A2   2A 07 48               LD   HL,(RAD)   
+42A5   3A FF 47               LD   A,(SX)   
+42A8   16 FF                  LD   D,0FFH   
+42AA   5F                     LD   E,A   
+42AB   B7                     OR   A   
+42AC   ED 52                  SBC   HL,DE   
+42AE   19                     ADD   HL,DE   
+42AF   28 03                  JR   Z,$ + 5   
+42B1   F2 C6 42               JP   P,DS2   
+42B4   2A 05 48               LD   HL,(ERR)   
+42B7   3A 00 48               LD   A,(SY)   
+42BA   16 00                  LD   D,0   
+42BC   5F                     LD   E,A   
+42BD   B7                     OR   A   
+42BE   ED 52                  SBC   HL,DE   
+42C0   19                     ADD   HL,DE   
+42C1   28 16                  JR   Z,DS3   
+42C3   FA D9 42               JP   M,DS3   
+42C6                DS2:         
+42C6   3A FF 47               LD   A,(SX)   
+42C9   3C                     INC   A   
+42CA   32 FF 47               LD   (SX),A   
+42CD   87                     ADD   A,A   
+42CE   3C                     INC   A   
+42CF   5F                     LD   E,A   
+42D0   16 FF                  LD   D,0FFH   
+42D2   2A 05 48               LD   HL,(ERR)   
+42D5   19                     ADD   HL,DE   
+42D6   22 05 48               LD   (ERR),HL   
+42D9                             ;   } while (x < 0);
+42D9                DS3:         
+42D9   3A FF 47               LD   A,(SX)   
+42DC   B7                     OR   A   
+42DD   C2 36 42               JP   NZ,CIRCLE_LOOP   
+42E0   C9                     RET      
+42E1                             ;Fill Circle
+42E1                             ;Fills a circle by increasing radius until Radius = Original Radius E
+42E1                             ;Inputs BC = xm,ym (Midpoint)
+42E1                             ;       E = radius
+42E1                FILL_CIRCLE:      
+42E1   16 01                  LD   D,01H   ;Start radius
+42E3                NEXT_CIRCLE:      
+42E3   D5                     PUSH   DE   ;Save end Radius
+42E4   5A                     LD   E,D   
+42E5   CD 1A 42               CALL   DRAW_CIRCLE   
+42E8   D1                     POP   DE   ;Restore Radius
+42E9   7B                     LD   A,E   
+42EA   14                     INC   D   
+42EB   BA                     CP   D   
+42EC   30 F5                  JR   NC,NEXT_CIRCLE   
+42EE   C9                     RET      
+42EF                             ;Draw Pixel in position X Y
+42EF                             ;Input B = column/X (0-127), C = row/Y (0-63)
+42EF                             ;destroys HL
+42EF                DRAW_PIXEL:      
+42EF   79                     LD   A,C   
+42F0   FE 40                  CP   40H   
+42F2   D0                     RET   NC   
+42F3   78                     LD   A,B   
+42F4   FE 80                  CP   80H   
+42F6   D0                     RET   NC   
+42F7   D5                     PUSH   DE   
+42F8   CD 23 43               CALL   SET_GBUF   
+42FB   7A                     LD   A,D   
+42FC   B6                     OR   (HL)   
+42FD   77                     LD   (HL),A   
+42FE   D1                     POP   DE   
+42FF   C9                     RET      
+4300                             ;Clear Pixel in position X Y
+4300                             ;Input B = column/X (0-127), C = row/Y (0-63)
+4300                             ;destroys HL
+4300                CLEAR_PIXEL:      
+4300   79                     LD   A,C   
+4301   FE 40                  CP   40H   
+4303   D0                     RET   NC   
+4304   78                     LD   A,B   
+4305   FE 80                  CP   80H   
+4307   D0                     RET   NC   
+4308   D5                     PUSH   DE   
+4309   CD 23 43               CALL   SET_GBUF   
+430C   7A                     LD   A,D   
+430D   2F                     CPL      
+430E   A6                     AND   (HL)   
+430F   77                     LD   (HL),A   
+4310   D1                     POP   DE   
+4311   C9                     RET      
+4312                             ;Flip Pixel in position X Y
+4312                             ;Input B = column/X (0-127), C = row/Y (0-63)
+4312                             ;destroys HL
+4312                FLIP_PIXEL:      
+4312   79                     LD   A,C   
+4313   FE 40                  CP   40H   
+4315   D0                     RET   NC   
+4316   78                     LD   A,B   
+4317   FE 80                  CP   80H   
+4319   D0                     RET   NC   
+431A   D5                     PUSH   DE   
+431B   CD 23 43               CALL   SET_GBUF   
+431E   7A                     LD   A,D   
+431F   AE                     XOR   (HL)   
+4320   77                     LD   (HL),A   
+4321   D1                     POP   DE   
+4322   C9                     RET      
+4323                             ;Helper routine to set HL to the correct GBUF address given X and Y
+4323                             ;Input B = column/X (0-127), C = row/Y (0-63)
+4323                             ;Output HL = address of GBUF X,Y byte, D = Byte with Pixel Bit Set
+4323                             ;Destroys E
+4323                SET_GBUF:      
+4323   69                     LD   L,C   
+4324   26 00                  LD   H,00H   
+4326   29                     ADD   HL,HL   
+4327   29                     ADD   HL,HL   
+4328   29                     ADD   HL,HL   
+4329   29                     ADD   HL,HL   
+432A   11 FC 43               LD   DE,GBUF - 1   
+432D   19                     ADD   HL,DE   
+432E   78                     LD   A,B   
+432F   16 08                  LD   D,08H   
+4331                BASE_COL:      
+4331   23                     INC   HL   
+4332   92                     SUB   D   
+4333   30 FC                  JR   NC,BASE_COL   
+4335   2F                     CPL      
+4336   16 01                  LD   D,01H   
+4338   B7                     OR   A   
+4339   C8                     RET   Z   
+433A                SHIFT_BIT:      
+433A   CB 22                  SLA   D   
+433C   3D                     DEC   A   
+433D   20 FB                  JR   NZ,SHIFT_BIT   
+433F   C9                     RET      
+4340                             ;Main draw routine.  Moves GBUF to LCD and clears buffer
+4340                             ;Destroys all
+4340                PLOT_TO_LCD:      
+4340   21 FD 43               LD   HL,GBUF   
+4343   0E 80                  LD   C,80H   
+4345                PLOT_ROW:      
+4345   79                     LD   A,C   
+4346   E6 9F                  AND   9FH   
+4348   CD C9 43               CALL   LCD_INST   ;Vertical
+434B   3E 80                  LD   A,80H   
+434D   CB 69                  BIT   5,C   
+434F   28 02                  JR   Z,$ + 4   
+4351   F6 08                  OR   08H   
+4353   CD C9 43               CALL   LCD_INST   ;Horizontal
+4356   3E 02                  LD   A,02H   
+4358   CD E1 43               CALL   SER_SYNC   ;Data Block Sync
+435B   06 10                  LD   B,10H   ;send eight double bytes (16 bytes)
+435D                PLOT_COLUMN:      
+435D   7E                     LD   A,(HL)   
+435E   CD CE 43               CALL   LCD_DATA   
+4361   3A 09 48               LD   A,(CLRBUF)   
+4364   B7                     OR   A   
+4365   28 02                  JR   Z,$ + 4   
+4367   36 00                  LD   (HL),00H   ;Clear Buffer if CLRBUF is non zero
+4369   23                     INC   HL   
+436A   10 F1                  DJNZ   PLOT_COLUMN   
+436C   0C                     INC   C   
+436D   CB 71                  BIT   6,C   ;Is Row = 64?
+436F   28 D4                  JR   Z,PLOT_ROW   
+4371   C9                     RET      
+4372                             ; Print ASCII text on a given row
+4372                             ; Inputs: A = 0 to 3 Row Number
+4372                             ;         DB "String" on next line, terminate with 0
+4372                             ; EG:
+4372                             ;   LD A,2
+4372                             ;   CALL PRINT_STRING
+4372                             ;   DB "This Text",0
+4372                             ; 
+4372                PRINT_STRING:      
+4372   47                     LD   B,A   
+4373   CD 2F 41               CALL   SET_TXT_MODE   
+4376   21 F5 43               LD   HL,ROWS   
+4379   78                     LD   A,B   
+437A   85                     ADD   A,L   
+437B   30 01                  JR   NC,$ + 3   
+437D   24                     INC   H   
+437E   6F                     LD   L,A   
+437F   7E                     LD   A,(HL)   
+4380   CD C9 43               CALL   LCD_INST   
+4383   3E 02                  LD   A,02H   
+4385   CD E1 43               CALL   SER_SYNC   ;Data Block Sync
+4388   E1                     POP   HL   
+4389                DS_LOOP:      
+4389   7E                     LD   A,(HL)   
+438A   23                     INC   HL   
+438B   B7                     OR   A   
+438C   28 05                  JR   Z,DS_EXIT   
+438E   CD CE 43               CALL   LCD_DATA   
+4391   18 F6                  JR   DS_LOOP   
+4393                DS_EXIT:      
+4393   E9                     JP   (HL)   
+4394                             ;Print Characters at a position X,Y
+4394                             ;Eventhough there are 16 columns, only every second column can be written
+4394                             ;to and two characters are to be printed.  IE: if you want to print one
+4394                             ;character in column 2, then you must set B=0 and print " x", putting
+4394                             ;a space before the chracter.
+4394                             ;Input B = column/X (0-7), C = row/Y (0-3)
+4394                             ;      HL = Start address of text to display, terminate with 0
+4394                PRINT_CHARS:      
+4394   CD 2F 41               CALL   SET_TXT_MODE   
+4397   11 F5 43               LD   DE,ROWS   
+439A   79                     LD   A,C   
+439B   83                     ADD   A,E   
+439C   30 01                  JR   NC,$ + 3   
+439E   14                     INC   D   
+439F   5F                     LD   E,A   
+43A0   1A                     LD   A,(DE)   
+43A1   80                     ADD   A,B   
+43A2   CD C9 43               CALL   LCD_INST   
+43A5   3E 02                  LD   A,02H   
+43A7   CD E1 43               CALL   SER_SYNC   ;Data Block Sync
+43AA                PC_LOOP:      
+43AA   7E                     LD   A,(HL)   
+43AB   23                     INC   HL   
+43AC   B7                     OR   A   
+43AD   C8                     RET   Z   
+43AE   CD CE 43               CALL   LCD_DATA   
+43B1   18 F7                  JR   PC_LOOP   
+43B3                             ; Delay for LCD write
+43B3                DELAY_US:      
+43B3   11 04 00               LD   DE,V_DELAY_US   ;DELAY BETWEEN, was 0010H
+43B6                DELAY_MS:      
+43B6   1B                     DEC   DE   ;EACH BYTE
+43B7   7A                     LD   A,D   ;AS PER
+43B8   B3                     OR   E   ;LCD MANUFACTER'S
+43B9   20 FB                  JR   NZ,DELAY_MS   ;INSTRUCTIONS
+43BB   C9                     RET      
+43BC                             ; Set Buffer Clearing after outputting to LCD
+43BC                             ; Input: A = 0 Buffer to be cleared, A <> 0 Buffer kept
+43BC                SET_BUF_CLEAR:      
+43BC   3E FF                  LD   A,0FFH   
+43BE   32 09 48               LD   (CLRBUF),A   
+43C1   C3 D9 40               JP   CLEAR_GBUF   
+43C4                SET_BUF_NO_CLEAR:      
+43C4   AF                     XOR   A   
+43C5   32 09 48               LD   (CLRBUF),A   
+43C8   C9                     RET      
+43C9                             ;Serial/Paralled Communication routines
+43C9                             ;Send information to the LCD screen via SERIAL or PARALLEL connection.  Parallel is straight
+43C9                             ;forward.  Just send the Byte in the Accumilator to the relevante Instruction or Data port.
+43C9                             ;Then call a delay for that byte to be processed by the LCD.
+43C9                             ;For Serial communication, three Bytes are to be sent using the SPI protocol.
+43C9                             ;The first byte is a synchronise/configuration byte.  This sets
+43C9                             ;the Data/Instruction register bit.  The second and third bytes is the actual data to send.
+43C9                             ;It is split into two bytes with 4 bits of data set at the upper nibble and zeros for the rest.
+43C9                             ;A maximum of 256 Bytes of Data information can be send with only one Synchronise Byte.  The
+43C9                             ;LCD Data routine doesn't send the sync byte.  It needs to be done prior by calling SER_SYNC first.
+43C9                             ; 
+43C9                             ;The two routines to use are:
+43C9                             ;LCD_DATA, Sends Data information.  Along with SER_SYNC called prior and
+43C9                             ;LCD_INST, Sends Instruction information
+43C9                             ;Send to LCD Instruction register
+43C9                             ;If serial connection it will send the byte with a synchronise byte.
+43C9                             ;If parallel byte is sent to the Instruction register port and a delay is triggered
+43C9                             ;Input: A = Byte to send
+43C9                LCD_INST:      
+43C9                          IF   COMMS_MODE   
+                              PUSH   AF   
+                              XOR   A   
+                              CALL   SER_SYNC   
+                              POP   AF   
+                              JP   SER_BYTE   
+43C9                          ELSE      
+43C9   D3 07                  OUT   (LCD_IR),A   
+43CB   C3 B3 43               JP   DELAY_US   
+43CE                          ENDIF      
+43CE                             ;Send to LCD Data register
+43CE                             ;If serial connection it will send the byte with no synchronise byte.  The
+43CE                             ;synchronise byte is to be sent separately.
+43CE                             ;If parallel byte is sent to the Data register port and a delay is triggered
+43CE                             ;Input: A = Byte to send
+43CE                LCD_DATA:      
+43CE                          IF   COMMS_MODE   
+                              JP   SER_BYTE   
+43CE                          ELSE      
+43CE   D3 87                  OUT   (LCD_DR),A   
+43D0   C3 B3 43               JP   DELAY_US   
+43D3                          ENDIF      
+43D3                             ;Serial Byte Send
+43D3                             ;Send a Byte in two halfs,  First half is the upper nibble with 4 zeros and second
+43D3                             ;byte is the lower nibble shifted to the upper nibble with 4 zeros.
+43D3                             ;   EG: if Byte to send is 10010110B, then
+43D3                             ;   BYTE 1 = 10010000b and
+43D3                             ;   BYTE 2 = 01100000b
+43D3                             ;Input: A = byte to send
+43D3                SER_BYTE:      
+43D3   F5                     PUSH   AF   
+43D4   CD DC 43               CALL   SEND_PART   
+43D7   F1                     POP   AF   
+43D8   07                     RLCA      
+43D9   07                     RLCA      
+43DA   07                     RLCA      
+43DB   07                     RLCA      
+43DC                SEND_PART:      
+43DC   E6 F0                  AND   0F0H   ;Mask out lower nibble
+43DE   C3 E2 43               JP   SPI_WR   ;Send First Half of Command/Data byte
+43E1                             ;Serial Synchronise Byte
+43E1                             ;Send 5 consecutive "1"s then "000"s for instruction or "010" for data.
+43E1                             ;Input: A = 0x00 for instruction register and 0x02 if data register
+43E1                SER_SYNC:      
+43E1                          IF   COMMS_MODE   
+                              OR   SER_BT   
+43E1                          ELSE      
+43E1   C9                     RET      
+43E2                          ENDIF      
+43E2                             ;SPI Write Routine.
+43E2                             ;Send a byte to the LCD using the SPI protocol
+43E2                             ;Inputs: A = Byte to be sent
+43E2                SPI_WR:      
+43E2   C5                     PUSH   BC   
+43E3   06 08                  LD   B,08H   ;Eight Bits to send
+43E5   4F                     LD   C,A   ;SPI Byte
+43E6   AF                     XOR   A   ;Clear A
+43E7                CLK_LOOP:      
+43E7   CB 01                  RLC   C   ;Put Bit 7 in Carry Flag
+43E9   8F                     ADC   A,A   ;Set Bit 0 with Carry Flag
+43EA   F6 02                  OR   02H   ;Set SCLK high (pulse clock)
+43EC   D3 07                  OUT   (LCD_SER),A   ;Output to LCD
+43EE   AF                     XOR   A   ;Set SCLK low (and SID)
+43EF   D3 07                  OUT   (LCD_SER),A   ;Output to LCD
+43F1   10 F4                  DJNZ   CLK_LOOP   ;Get next Bit
+43F3   C1                     POP   BC   
+43F4   C9                     RET      
+43F5                             ; Contstants
+43F5   80 90 88 98  ROWS:     DB   80H,90H,88H,98H   ;Text Row start position
+43F9                INIT_BASIC:      
+43F9   30                     DB   30H   ;8 Bit interface, basic instruction
+43FA   0C                     DB   0CH   ;display on, cursor & blink off
+43FB   06                     DB   06H   ;cursor move to right ,no shift
+43FC   01                     DB   01H   ;clear RAM
+43FD                             ; RAM Locations - Move this section to RAM if necessary
+43FD                             ;---------------
+43FD                             ;ORG 1000H              ;Start location
+43FD                GBUF:     DS   0400H   ;Graphics Buffer 16 * 64 = 1024 byte
+47FD   00 00        ENDPT:    DW   0000H   ;End Point for Line
+47FF   00           SX:       DB   00H   ;Sign of X
+4800   00           SY:       DB   00H   ;Sign of Y
+4801   00 00        DX:       DW   0000H   ;Change of X
+4803   00 00        DY:       DW   0000H   ;Change of Y
+4805   00 00        ERR:      DW   0000H   ;Error Rate
+4807   00 00        RAD:      DW   0000H   ;Radius
+4809   00           CLRBUF:   DB   00H   ;Clear Buffer Flag on LCD Displaying
+
+
+G_INIT_LCD:         407C DEFINED AT LINE 35
+                    > USED AT LINE 57
+G_SET_GR_MODE:      4088 DEFINED AT LINE 36
+                    > USED AT LINE 58
+G_DRAW_PIXEL:       4097 DEFINED AT LINE 37
+                    > USED AT LINE 85
+G_PLOT_TO_LCD:      40A0 DEFINED AT LINE 38
+                    > USED AT LINE 142
+C_MAX_X:            0080 DEFINED AT LINE 41
+                    > USED AT LINE 67
+                    > USED AT LINE 71
+                    > USED AT LINE 90
+                    > USED AT LINE 99
+                    > USED AT LINE 134
+C_MAX_Y:            0040 DEFINED AT LINE 42
+                    > USED AT LINE 77
+START_ADR:          4000 DEFINED AT LINE 45
+                    > USED AT LINE 47
+                    > USED AT LINE 48
+                    > USED AT LINE 49
+                    > USED AT LINE 51
+RULE:               48FF DEFINED AT LINE 47
+                    > USED AT LINE 55
+                    > USED AT LINE 118
+CELLS_CUR:          4900 DEFINED AT LINE 48
+                    > USED AT LINE 63
+                    > USED AT LINE 64
+                    > USED AT LINE 71
+                    > USED AT LINE 79
+                    > USED AT LINE 97
+                    > USED AT LINE 132
+CELLS_NXT:          4980 DEFINED AT LINE 49
+                    > USED AT LINE 98
+                    > USED AT LINE 133
+INIT:               4000 DEFINED AT LINE 53
+START:              400B DEFINED AT LINE 59
+DRAW_CELLS:         401F DEFINED AT LINE 75
+                    > USED AT LINE 138
+NEW_COLUMN:         4029 DEFINED AT LINE 81
+                    > USED AT LINE 91
+SKIP_DRAW:          4031 DEFINED AT LINE 86
+                    > USED AT LINE 84
+CALC_NEXT:          4038 DEFINED AT LINE 95
+NEXT_CELL:          4041 DEFINED AT LINE 100
+                    > USED AT LINE 129
+ROT_LOOP:           4058 DEFINED AT LINE 120
+                    > USED AT LINE 124
+ROT_DONE:           405E DEFINED AT LINE 125
+                    > USED AT LINE 122
+COPY_CELLS:         4064 DEFINED AT LINE 131
+FINISH:             4073 DEFINED AT LINE 141
+                    > USED AT LINE 78
+GET_CELL:           4077 DEFINED AT LINE 151
+                    > USED AT LINE 104
+                    > USED AT LINE 109
+                    > USED AT LINE 114
+GLIB_ORG:           407C DEFINED AT LINE 158
+                    > USED AT LINE 35
+                    > USED AT LINE 36
+                    > USED AT LINE 37
+                    > USED AT LINE 38
+LCD_IR:             0007 DEFINED AT LINE 49 IN lcd_128x64_glib.z80
+                    > USED AT LINE 768 IN lcd_128x64_glib.z80
+LCD_DR:             0087 DEFINED AT LINE 50 IN lcd_128x64_glib.z80
+                    > USED AT LINE 781 IN lcd_128x64_glib.z80
+LCD_SER:            0007 DEFINED AT LINE 51 IN lcd_128x64_glib.z80
+                    > USED AT LINE 826 IN lcd_128x64_glib.z80
+                    > USED AT LINE 828 IN lcd_128x64_glib.z80
+V_DELAY_US:         0004 DEFINED AT LINE 52 IN lcd_128x64_glib.z80
+                    > USED AT LINE 721 IN lcd_128x64_glib.z80
+COMMS_MODE:         0000 DEFINED AT LINE 56 IN lcd_128x64_glib.z80
+SER_BT:             00F8 DEFINED AT LINE 60 IN lcd_128x64_glib.z80
+INIT_LCD:           40C4 DEFINED AT LINE 91 IN lcd_128x64_glib.z80
+                    > USED AT LINE 65 IN lcd_128x64_glib.z80
+NEXT_CMD:           40C9 DEFINED AT LINE 94 IN lcd_128x64_glib.z80
+                    > USED AT LINE 98 IN lcd_128x64_glib.z80
+CLEAR_GBUF:         40D9 DEFINED AT LINE 105 IN lcd_128x64_glib.z80
+                    > USED AT LINE 66 IN lcd_128x64_glib.z80
+                    > USED AT LINE 734 IN lcd_128x64_glib.z80
+CLEAR_GR_LCD:       40E7 DEFINED AT LINE 115 IN lcd_128x64_glib.z80
+                    > USED AT LINE 67 IN lcd_128x64_glib.z80
+                    > USED AT LINE 102 IN lcd_128x64_glib.z80
+CLR_X:              40EC DEFINED AT LINE 118 IN lcd_128x64_glib.z80
+                    > USED AT LINE 135 IN lcd_128x64_glib.z80
+CLR_Y:              40FF DEFINED AT LINE 128 IN lcd_128x64_glib.z80
+                    > USED AT LINE 131 IN lcd_128x64_glib.z80
+CLEAR_TXT_LCD:      410E DEFINED AT LINE 139 IN lcd_128x64_glib.z80
+                    > USED AT LINE 68 IN lcd_128x64_glib.z80
+CLR_ROWS:           411D DEFINED AT LINE 146 IN lcd_128x64_glib.z80
+                    > USED AT LINE 149 IN lcd_128x64_glib.z80
+SET_GR_MODE:        4125 DEFINED AT LINE 153 IN lcd_128x64_glib.z80
+                    > USED AT LINE 69 IN lcd_128x64_glib.z80
+                    > USED AT LINE 116 IN lcd_128x64_glib.z80
+SET_TXT_MODE:       412F DEFINED AT LINE 160 IN lcd_128x64_glib.z80
+                    > USED AT LINE 70 IN lcd_128x64_glib.z80
+                    > USED AT LINE 140 IN lcd_128x64_glib.z80
+                    > USED AT LINE 669 IN lcd_128x64_glib.z80
+                    > USED AT LINE 699 IN lcd_128x64_glib.z80
+DRAW_BOX:           4134 DEFINED AT LINE 168 IN lcd_128x64_glib.z80
+                    > USED AT LINE 71 IN lcd_128x64_glib.z80
+TOP:                4135 DEFINED AT LINE 170 IN lcd_128x64_glib.z80
+                    > USED AT LINE 175 IN lcd_128x64_glib.z80
+BOTTOM:             4140 DEFINED AT LINE 180 IN lcd_128x64_glib.z80
+                    > USED AT LINE 185 IN lcd_128x64_glib.z80
+LEFT:               414A DEFINED AT LINE 189 IN lcd_128x64_glib.z80
+                    > USED AT LINE 194 IN lcd_128x64_glib.z80
+RIGHT:              4155 DEFINED AT LINE 199 IN lcd_128x64_glib.z80
+                    > USED AT LINE 204 IN lcd_128x64_glib.z80
+FILL_BOX:           415F DEFINED AT LINE 213 IN lcd_128x64_glib.z80
+                    > USED AT LINE 75 IN lcd_128x64_glib.z80
+                    > USED AT LINE 225 IN lcd_128x64_glib.z80
+NEXT_PIXEL:         4160 DEFINED AT LINE 215 IN lcd_128x64_glib.z80
+                    > USED AT LINE 220 IN lcd_128x64_glib.z80
+DRAW_LINE:          416F DEFINED AT LINE 245 IN lcd_128x64_glib.z80
+                    > USED AT LINE 72 IN lcd_128x64_glib.z80
+LINE_LOOP:          41CA DEFINED AT LINE 314 IN lcd_128x64_glib.z80
+                    > USED AT LINE 353 IN lcd_128x64_glib.z80
+                    > USED AT LINE 362 IN lcd_128x64_glib.z80
+LL2:                41F5 DEFINED AT LINE 346 IN lcd_128x64_glib.z80
+                    > USED AT LINE 335 IN lcd_128x64_glib.z80
+LL3:                4202 DEFINED AT LINE 354 IN lcd_128x64_glib.z80
+                    > USED AT LINE 352 IN lcd_128x64_glib.z80
+ABSHL:              4210 DEFINED AT LINE 364 IN lcd_128x64_glib.z80
+                    > USED AT LINE 288 IN lcd_128x64_glib.z80
+                    > USED AT LINE 299 IN lcd_128x64_glib.z80
+DRAW_CIRCLE:        421A DEFINED AT LINE 393 IN lcd_128x64_glib.z80
+                    > USED AT LINE 73 IN lcd_128x64_glib.z80
+                    > USED AT LINE 528 IN lcd_128x64_glib.z80
+CIRCLE_LOOP:        4236 DEFINED AT LINE 414 IN lcd_128x64_glib.z80
+                    > USED AT LINE 516 IN lcd_128x64_glib.z80
+DS1:                42A2 DEFINED AT LINE 482 IN lcd_128x64_glib.z80
+                    > USED AT LINE 470 IN lcd_128x64_glib.z80
+DS2:                42C6 DEFINED AT LINE 501 IN lcd_128x64_glib.z80
+                    > USED AT LINE 491 IN lcd_128x64_glib.z80
+DS3:                42D9 DEFINED AT LINE 513 IN lcd_128x64_glib.z80
+                    > USED AT LINE 499 IN lcd_128x64_glib.z80
+                    > USED AT LINE 500 IN lcd_128x64_glib.z80
+FILL_CIRCLE:        42E1 DEFINED AT LINE 523 IN lcd_128x64_glib.z80
+                    > USED AT LINE 76 IN lcd_128x64_glib.z80
+NEXT_CIRCLE:        42E3 DEFINED AT LINE 525 IN lcd_128x64_glib.z80
+                    > USED AT LINE 533 IN lcd_128x64_glib.z80
+DRAW_PIXEL:         42EF DEFINED AT LINE 539 IN lcd_128x64_glib.z80
+                    > USED AT LINE 74 IN lcd_128x64_glib.z80
+                    > USED AT LINE 171 IN lcd_128x64_glib.z80
+                    > USED AT LINE 181 IN lcd_128x64_glib.z80
+                    > USED AT LINE 190 IN lcd_128x64_glib.z80
+                    > USED AT LINE 200 IN lcd_128x64_glib.z80
+                    > USED AT LINE 216 IN lcd_128x64_glib.z80
+                    > USED AT LINE 316 IN lcd_128x64_glib.z80
+                    > USED AT LINE 424 IN lcd_128x64_glib.z80
+                    > USED AT LINE 435 IN lcd_128x64_glib.z80
+                    > USED AT LINE 447 IN lcd_128x64_glib.z80
+                    > USED AT LINE 457 IN lcd_128x64_glib.z80
+CLEAR_PIXEL:        4300 DEFINED AT LINE 559 IN lcd_128x64_glib.z80
+                    > USED AT LINE 84 IN lcd_128x64_glib.z80
+FLIP_PIXEL:         4312 DEFINED AT LINE 580 IN lcd_128x64_glib.z80
+                    > USED AT LINE 85 IN lcd_128x64_glib.z80
+SET_GBUF:           4323 DEFINED AT LINE 601 IN lcd_128x64_glib.z80
+                    > USED AT LINE 548 IN lcd_128x64_glib.z80
+                    > USED AT LINE 568 IN lcd_128x64_glib.z80
+                    > USED AT LINE 589 IN lcd_128x64_glib.z80
+BASE_COL:           4331 DEFINED AT LINE 613 IN lcd_128x64_glib.z80
+                    > USED AT LINE 616 IN lcd_128x64_glib.z80
+SHIFT_BIT:          433A DEFINED AT LINE 622 IN lcd_128x64_glib.z80
+                    > USED AT LINE 625 IN lcd_128x64_glib.z80
+PLOT_TO_LCD:        4340 DEFINED AT LINE 630 IN lcd_128x64_glib.z80
+                    > USED AT LINE 77 IN lcd_128x64_glib.z80
+PLOT_ROW:           4345 DEFINED AT LINE 633 IN lcd_128x64_glib.z80
+                    > USED AT LINE 656 IN lcd_128x64_glib.z80
+PLOT_COLUMN:        435D DEFINED AT LINE 645 IN lcd_128x64_glib.z80
+                    > USED AT LINE 653 IN lcd_128x64_glib.z80
+PRINT_STRING:       4372 DEFINED AT LINE 667 IN lcd_128x64_glib.z80
+                    > USED AT LINE 78 IN lcd_128x64_glib.z80
+DS_LOOP:            4389 DEFINED AT LINE 681 IN lcd_128x64_glib.z80
+                    > USED AT LINE 687 IN lcd_128x64_glib.z80
+DS_EXIT:            4393 DEFINED AT LINE 688 IN lcd_128x64_glib.z80
+                    > USED AT LINE 685 IN lcd_128x64_glib.z80
+PRINT_CHARS:        4394 DEFINED AT LINE 698 IN lcd_128x64_glib.z80
+                    > USED AT LINE 79 IN lcd_128x64_glib.z80
+PC_LOOP:            43AA DEFINED AT LINE 711 IN lcd_128x64_glib.z80
+                    > USED AT LINE 717 IN lcd_128x64_glib.z80
+DELAY_US:           43B3 DEFINED AT LINE 720 IN lcd_128x64_glib.z80
+                    > USED AT LINE 80 IN lcd_128x64_glib.z80
+                    > USED AT LINE 769 IN lcd_128x64_glib.z80
+                    > USED AT LINE 782 IN lcd_128x64_glib.z80
+DELAY_MS:           43B6 DEFINED AT LINE 722 IN lcd_128x64_glib.z80
+                    > USED AT LINE 81 IN lcd_128x64_glib.z80
+                    > USED AT LINE 100 IN lcd_128x64_glib.z80
+                    > USED AT LINE 726 IN lcd_128x64_glib.z80
+SET_BUF_CLEAR:      43BC DEFINED AT LINE 731 IN lcd_128x64_glib.z80
+                    > USED AT LINE 82 IN lcd_128x64_glib.z80
+SET_BUF_NO_CLEAR:   43C4 DEFINED AT LINE 736 IN lcd_128x64_glib.z80
+                    > USED AT LINE 83 IN lcd_128x64_glib.z80
+LCD_INST:           43C9 DEFINED AT LINE 760 IN lcd_128x64_glib.z80
+                    > USED AT LINE 86 IN lcd_128x64_glib.z80
+                    > USED AT LINE 96 IN lcd_128x64_glib.z80
+                    > USED AT LINE 121 IN lcd_128x64_glib.z80
+                    > USED AT LINE 123 IN lcd_128x64_glib.z80
+                    > USED AT LINE 142 IN lcd_128x64_glib.z80
+                    > USED AT LINE 155 IN lcd_128x64_glib.z80
+                    > USED AT LINE 157 IN lcd_128x64_glib.z80
+                    > USED AT LINE 162 IN lcd_128x64_glib.z80
+                    > USED AT LINE 636 IN lcd_128x64_glib.z80
+                    > USED AT LINE 641 IN lcd_128x64_glib.z80
+                    > USED AT LINE 677 IN lcd_128x64_glib.z80
+                    > USED AT LINE 708 IN lcd_128x64_glib.z80
+LCD_DATA:           43CE DEFINED AT LINE 777 IN lcd_128x64_glib.z80
+                    > USED AT LINE 87 IN lcd_128x64_glib.z80
+                    > USED AT LINE 129 IN lcd_128x64_glib.z80
+                    > USED AT LINE 130 IN lcd_128x64_glib.z80
+                    > USED AT LINE 148 IN lcd_128x64_glib.z80
+                    > USED AT LINE 647 IN lcd_128x64_glib.z80
+                    > USED AT LINE 686 IN lcd_128x64_glib.z80
+                    > USED AT LINE 716 IN lcd_128x64_glib.z80
+SER_BYTE:           43D3 DEFINED AT LINE 792 IN lcd_128x64_glib.z80
+SEND_PART:          43DC DEFINED AT LINE 800 IN lcd_128x64_glib.z80
+                    > USED AT LINE 794 IN lcd_128x64_glib.z80
+SER_SYNC:           43E1 DEFINED AT LINE 807 IN lcd_128x64_glib.z80
+                    > USED AT LINE 88 IN lcd_128x64_glib.z80
+                    > USED AT LINE 125 IN lcd_128x64_glib.z80
+                    > USED AT LINE 144 IN lcd_128x64_glib.z80
+                    > USED AT LINE 643 IN lcd_128x64_glib.z80
+                    > USED AT LINE 679 IN lcd_128x64_glib.z80
+                    > USED AT LINE 710 IN lcd_128x64_glib.z80
+SPI_WR:             43E2 DEFINED AT LINE 817 IN lcd_128x64_glib.z80
+                    > USED AT LINE 802 IN lcd_128x64_glib.z80
+CLK_LOOP:           43E7 DEFINED AT LINE 822 IN lcd_128x64_glib.z80
+                    > USED AT LINE 829 IN lcd_128x64_glib.z80
+ROWS:               43F5 DEFINED AT LINE 834 IN lcd_128x64_glib.z80
+                    > USED AT LINE 670 IN lcd_128x64_glib.z80
+                    > USED AT LINE 700 IN lcd_128x64_glib.z80
+INIT_BASIC:         43F9 DEFINED AT LINE 836 IN lcd_128x64_glib.z80
+                    > USED AT LINE 92 IN lcd_128x64_glib.z80
+GBUF:               43FD DEFINED AT LINE 847 IN lcd_128x64_glib.z80
+                    > USED AT LINE 106 IN lcd_128x64_glib.z80
+                    > USED AT LINE 107 IN lcd_128x64_glib.z80
+                    > USED AT LINE 608 IN lcd_128x64_glib.z80
+                    > USED AT LINE 631 IN lcd_128x64_glib.z80
+ENDPT:              47FD DEFINED AT LINE 848 IN lcd_128x64_glib.z80
+                    > USED AT LINE 278 IN lcd_128x64_glib.z80
+                    > USED AT LINE 319 IN lcd_128x64_glib.z80
+                    > USED AT LINE 322 IN lcd_128x64_glib.z80
+SX:                 47FF DEFINED AT LINE 849 IN lcd_128x64_glib.z80
+                    > USED AT LINE 267 IN lcd_128x64_glib.z80
+                    > USED AT LINE 341 IN lcd_128x64_glib.z80
+                    > USED AT LINE 397 IN lcd_128x64_glib.z80
+                    > USED AT LINE 417 IN lcd_128x64_glib.z80
+                    > USED AT LINE 428 IN lcd_128x64_glib.z80
+                    > USED AT LINE 443 IN lcd_128x64_glib.z80
+                    > USED AT LINE 454 IN lcd_128x64_glib.z80
+                    > USED AT LINE 484 IN lcd_128x64_glib.z80
+                    > USED AT LINE 502 IN lcd_128x64_glib.z80
+                    > USED AT LINE 504 IN lcd_128x64_glib.z80
+                    > USED AT LINE 514 IN lcd_128x64_glib.z80
+SY:                 4800 DEFINED AT LINE 850 IN lcd_128x64_glib.z80
+                    > USED AT LINE 276 IN lcd_128x64_glib.z80
+                    > USED AT LINE 358 IN lcd_128x64_glib.z80
+                    > USED AT LINE 400 IN lcd_128x64_glib.z80
+                    > USED AT LINE 421 IN lcd_128x64_glib.z80
+                    > USED AT LINE 431 IN lcd_128x64_glib.z80
+                    > USED AT LINE 439 IN lcd_128x64_glib.z80
+                    > USED AT LINE 451 IN lcd_128x64_glib.z80
+                    > USED AT LINE 463 IN lcd_128x64_glib.z80
+                    > USED AT LINE 471 IN lcd_128x64_glib.z80
+                    > USED AT LINE 473 IN lcd_128x64_glib.z80
+                    > USED AT LINE 493 IN lcd_128x64_glib.z80
+DX:                 4801 DEFINED AT LINE 851 IN lcd_128x64_glib.z80
+                    > USED AT LINE 289 IN lcd_128x64_glib.z80
+                    > USED AT LINE 310 IN lcd_128x64_glib.z80
+                    > USED AT LINE 348 IN lcd_128x64_glib.z80
+DY:                 4803 DEFINED AT LINE 852 IN lcd_128x64_glib.z80
+                    > USED AT LINE 306 IN lcd_128x64_glib.z80
+                    > USED AT LINE 331 IN lcd_128x64_glib.z80
+ERR:                4805 DEFINED AT LINE 853 IN lcd_128x64_glib.z80
+                    > USED AT LINE 312 IN lcd_128x64_glib.z80
+                    > USED AT LINE 327 IN lcd_128x64_glib.z80
+                    > USED AT LINE 338 IN lcd_128x64_glib.z80
+                    > USED AT LINE 340 IN lcd_128x64_glib.z80
+                    > USED AT LINE 355 IN lcd_128x64_glib.z80
+                    > USED AT LINE 357 IN lcd_128x64_glib.z80
+                    > USED AT LINE 412 IN lcd_128x64_glib.z80
+                    > USED AT LINE 460 IN lcd_128x64_glib.z80
+                    > USED AT LINE 478 IN lcd_128x64_glib.z80
+                    > USED AT LINE 480 IN lcd_128x64_glib.z80
+                    > USED AT LINE 492 IN lcd_128x64_glib.z80
+                    > USED AT LINE 509 IN lcd_128x64_glib.z80
+                    > USED AT LINE 511 IN lcd_128x64_glib.z80
+RAD:                4807 DEFINED AT LINE 854 IN lcd_128x64_glib.z80
+                    > USED AT LINE 404 IN lcd_128x64_glib.z80
+                    > USED AT LINE 461 IN lcd_128x64_glib.z80
+                    > USED AT LINE 483 IN lcd_128x64_glib.z80
+CLRBUF:             4809 DEFINED AT LINE 855 IN lcd_128x64_glib.z80
+                    > USED AT LINE 648 IN lcd_128x64_glib.z80
+                    > USED AT LINE 733 IN lcd_128x64_glib.z80
+                    > USED AT LINE 738 IN lcd_128x64_glib.z80

@@ -1,0 +1,246 @@
+0000                             ; Celular Automata for the Z80
+0000                             ; ----------------------------
+0000                             ; TEC-1G Mon3 Version for the GLCD Add-On
+0000                             ; ---------------------------------------
+0000                             ; Code written by Brian Chiha
+0000                             ; 
+0000                             ; In mathematics and computability theory, an elementary cellular
+0000                             ; automaton is a one-dimensional cellular automaton where there are
+0000                             ; two possible states (labeled 0 and 1) and the rule to determine
+0000                             ; the state of a cell in the next generation depends only on the
+0000                             ; current state of the cell and its two immediate neighbors.
+0000                             ; 
+0000                             ; Consider a one dimensional array where each cell can contain only
+0000                             ; two values, 1 or 0.  A cell in a one dimentional arrays will have
+0000                             ; two neighbors.  One to the left and one to the right.  Considering
+0000                             ; the three cells with either 1 or 0 states, there are 2^3 or 8
+0000                             ; different combinations.  The combination are:
+0000                             ; 
+0000                             ;           111, 110, 101, 100, 011, 010, 001, 000
+0000                             ;  RULE 6C   0    1    1    0    1    1    0    0
+0000                             ; 
+0000                             ; For the next generation of cells, a rule can be applied based on
+0000                             ; one of the 8 combinations above.  If 6C is the rule, its bits
+0000                             ; can represent the next generation.  IE: if the three cells are
+0000                             ; 011 then the next cell will be a 1.  And if the cells are 100,
+0000                             ; then the next cell will be a 0.  A rule can be from 0 to 255.
+0000                             ; 
+0000                             ; Finally, if the first one dimentional array has all values set
+0000                             ; to 0 except its center cell set to 1.  When the rule is applied
+0000                             ; for each generation, patterns emerge.
+0000                             ; LCD Graphics Library Functions used		
+0000                G_INIT_LCD:   EQU   0   
+0000                G_SET_GR_MODE:   EQU   4   
+0000                G_DRAW_PIXEL:   EQU   9   
+0000                G_PLOT_TO_LCD:   EQU   12   
+0000                             ; Mon3 API Calls
+0000                M_CONV_A_SEG:   EQU   4   
+0000                M_SCAN_KEY_WAIT:   EQU   17   
+0000                             ; Constants
+0000                C_MAX_X:   EQU   128   
+0000                C_MAX_Y:   EQU   64   
+0000                             ; RAM Variables
+0000                START_ADR:   EQU   4000H   ;Start location of code
+0000                RULE:     EQU   START_ADR + 00FFH   ;Rule value 0-255
+0000                CELLS_CUR:   EQU   START_ADR + 0100H   ;Current generation (128 bytes)
+0000                CELLS_NXT:   EQU   START_ADR + 0180H   ;Next generation
+4000                          .ORG   START_ADR   ;Start Location
+4000                INIT:        
+4000   3E 96                  LD   A,96H   ;Start Rule (Had to pick one!)
+4002   32 FF 40               LD   (RULE),A   ;Save the Rule
+4005                             ;Set up Graphics LCD
+4005   3E 00                  LD   A,G_INIT_LCD   ;Initialise GLCD
+4007   DF                     RST   18H   
+4008   3E 04                  LD   A,G_SET_GR_MODE   ;Set to Graphics Mode
+400A   DF                     RST   18H   
+400B                START:       
+400B                             ;Initialise the first row of cells to 0
+400B   21 00 41               LD   HL,CELLS_CUR   ;Set first cell to 0
+400E   11 01 41               LD   DE,CELLS_CUR+1   ;And use LDIR to copy
+4011   AF                     XOR   A   ;the first cell to the
+4012   77                     LD   (HL),A   ;next, 127 times
+4013   01 7F 00               LD   BC,C_MAX_X-1   
+4016   ED B0                  LDIR      
+4018                             ;Set the middle cell (or near to it), to 1
+4018   3E 01                  LD   A,1   
+401A   32 40 41               LD   (CELLS_CUR+C_MAX_X/2),A   ;set cell to 1
+401D                             ;Set C to the first ROW which is 0
+401D   0E 00                  LD   C,00H   
+401F                             ;Draw the 1-D array to the current ROM
+401F                DRAW_CELLS:      
+401F   79                     LD   A,C   ;Get current ROW
+4020   FE 40                  CP   C_MAX_Y   ;Is it at the last row?
+4022   28 4F                  JR   Z,FINISH   ;Yes, jump to finish
+4024   11 00 41               LD   DE,CELLS_CUR   ;No, then set DE to current cells array
+4027   06 00                  LD   B,00H   ;Set COLUMN to 0
+4029                NEW_COLUMN:      
+4029   1A                     LD   A,(DE)   ;Get value stored in array
+402A   FE 01                  CP   1   ;Is current cell a 1?
+402C   20 03                  JR   NZ,SKIP_DRAW   ;No, skip drawing a pixel
+402E   3E 09                  LD   A,G_DRAW_PIXEL   ;Draw pixel at Column/Row
+4030   DF                     RST   18H   ;Draw Pixel at (B,C)
+4031                SKIP_DRAW:      
+4031   13                     INC   DE   ;Move to next cell
+4032   04                     INC   B   ;Increment COLUMN position
+4033   78                     LD   A,B   ;Get new COLUMN
+4034   FE 80                  CP   C_MAX_X   ;Is it the last column?
+4036   20 F1                  JR   NZ,NEW_COLUMN   ;No, display next cell
+4038                             ;Calculate the next generation based on the three
+4038                             ;cells and the Rule.  Current Cell is an aligned table
+4038                             ;which makes it much easier to use.
+4038                CALC_NEXT:      
+4038   C5                     PUSH   BC   
+4039   21 00 41               LD   HL,CELLS_CUR   ;Point to start of cells array
+403C   11 80 41               LD   DE,CELLS_NXT   ;Load DE with Next Generation array
+403F   06 80                  LD   B,C_MAX_X   ;128 cells to calculate
+4041                NEXT_CELL:      
+4041   2D                     DEC   L   ;Move L back two bytes to
+4042   2D                     DEC   L   ;look at HL-1 first
+4043                             ;get HL-1
+4043   CD 9A 40               CALL   GET_CELL   ;Get value in cell at "cell-1"
+4046   87                     ADD   A,A   ;Multiply by 4
+4047   87                     ADD   A,A   
+4048   4F                     LD   C,A   ;Save counter in C
+4049                             ;get HL
+4049   CD 9A 40               CALL   GET_CELL   ;Get value in cell at "cell"
+404C   87                     ADD   A,A   ;Multiply by 2
+404D   81                     ADD   A,C   
+404E   4F                     LD   C,A   ;Add value to counter
+404F                             ;get HL+1
+404F   CD 9A 40               CALL   GET_CELL   ;Get value in cell at "cell+1"
+4052   81                     ADD   A,C   
+4053   4F                     LD   C,A   ;Add value to counter
+4054                             ;C now stores the bit in the rule to use. 0-7
+4054   3A FF 40               LD   A,(RULE)   ;Get the rule
+4057   0C                     INC   C   ;Increment C to adjust for rotation loop
+4058                ROT_LOOP:      ;Put bit needed in Bit 0
+4058   0D                     DEC   C   ;Decrease counter
+4059   28 03                  JR   Z,ROT_DONE   ;if its zero, no more to do
+405B   0F                     RRCA      ;Rotate bits in rule to the right by 1
+405C   18 FA                  JR   ROT_LOOP   ;loop again until counter=0
+405E                ROT_DONE:      
+405E   E6 01                  AND   01H   ;Mask out all bits except Bit 0
+4060   12                     LD   (DE),A   ;Save value to Next Generation
+4061   13                     INC   DE   ;Move to next next generation cell
+4062   10 DD                  DJNZ   NEXT_CELL   ;Repeat for 128 cells
+4064                             ;Copy completed next generation cells to current cells
+4064                COPY_CELLS:      
+4064   11 00 41               LD   DE,CELLS_CUR   ;Use LDIR to copy 128 bytes from next
+4067   21 80 41               LD   HL,CELLS_NXT   ;to current cells array
+406A   01 80 00               LD   BC,C_MAX_X   
+406D   ED B0                  LDIR      
+406F   C1                     POP   BC   
+4070   0C                     INC   C   ;move to next ROW
+4071   18 AC                  JR   DRAW_CELLS   ;repeate until all generations done
+4073                             ;All pixels are plotted.  Display then to the GCLD and
+4073                             ;handle keypad input to select a new rule
+4073                FINISH:      
+4073   3E 0C                  LD   A,G_PLOT_TO_LCD   ;Plot Graphics buffer to GLCD
+4075   DF                     RST   18H   
+4076                             ;Display rule on 7segment display
+4076   3A FF 40               LD   A,(RULE)   ;Get current rule
+4079   0E 04                  LD   C,M_CONV_A_SEG   ;convert register A to seven segment values
+407B   11 A3 40               LD   DE,DISPLAY+4   ;Add then to the last two segments
+407E   D7                     RST   10H   
+407F                             ;Display rule and check for key input
+407F                DISP_LOOP:      
+407F   11 9F 40               LD   DE,DISPLAY   
+4082   E7                     RST   20H   ;Multiplex 7segement and check for key press
+4083   20 FA                  JR   NZ,DISP_LOOP   ;Loop if no key pressed
+4085                             ;Key is pressed, check for Plus/Minus or other
+4085                PLUS:        
+4085   FE 10                  CP   10H   ;Is it a plus key?
+4087   20 07                  JR   NZ,MINUS   ;No, check for minus
+4089   21 FF 40               LD   HL,RULE   ;Get rule and increment it
+408C   34                     INC   (HL)   
+408D   C3 0B 40               JP   START   ;Jump to start and display new rule
+4090                MINUS:       
+4090   FE 11                  CP   11H   ;is it a minus key?
+4092   C0                     RET   NZ   ;No, then exit the program
+4093   21 FF 40               LD   HL,RULE   ;Get rule and decrement it
+4096   35                     DEC   (HL)   
+4097   C3 0B 40               JP   START   ;Jump to start and display new rule
+409A                             ;Get the cell value at HL+1 and adjust for boundry cells
+409A                GET_CELL:      
+409A   2C                     INC   L   ;increment L
+409B   CB BD                  RES   7,L   ;remove bit 7 to wrap around if overflow
+409D   7E                     LD   A,(HL)   ;Get value from HL
+409E   C9                     RET      
+409F                             ;Display buffer with seven segment values for the word RULE
+409F                DISPLAY:      
+409F   4B EA C2 C7 00 00      DB   4BH,0EAH,0C2H,0C7H,00H,00H   ;"RULE  "
+40A5                             ;last two bytes will be updated above.
+
+
+G_INIT_LCD:         0000 DEFINED AT LINE 33
+                    > USED AT LINE 58
+G_SET_GR_MODE:      0004 DEFINED AT LINE 34
+                    > USED AT LINE 60
+G_DRAW_PIXEL:       0009 DEFINED AT LINE 35
+                    > USED AT LINE 86
+G_PLOT_TO_LCD:      000C DEFINED AT LINE 36
+                    > USED AT LINE 144
+M_CONV_A_SEG:       0004 DEFINED AT LINE 38
+                    > USED AT LINE 148
+M_SCAN_KEY_WAIT:    0011 DEFINED AT LINE 39
+C_MAX_X:            0080 DEFINED AT LINE 42
+                    > USED AT LINE 68
+                    > USED AT LINE 72
+                    > USED AT LINE 92
+                    > USED AT LINE 101
+                    > USED AT LINE 136
+C_MAX_Y:            0040 DEFINED AT LINE 43
+                    > USED AT LINE 78
+START_ADR:          4000 DEFINED AT LINE 46
+                    > USED AT LINE 48
+                    > USED AT LINE 49
+                    > USED AT LINE 50
+                    > USED AT LINE 52
+RULE:               40FF DEFINED AT LINE 48
+                    > USED AT LINE 56
+                    > USED AT LINE 120
+                    > USED AT LINE 147
+                    > USED AT LINE 160
+                    > USED AT LINE 166
+CELLS_CUR:          4100 DEFINED AT LINE 49
+                    > USED AT LINE 64
+                    > USED AT LINE 65
+                    > USED AT LINE 72
+                    > USED AT LINE 80
+                    > USED AT LINE 99
+                    > USED AT LINE 134
+CELLS_NXT:          4180 DEFINED AT LINE 50
+                    > USED AT LINE 100
+                    > USED AT LINE 135
+INIT:               4000 DEFINED AT LINE 54
+START:              400B DEFINED AT LINE 62
+                    > USED AT LINE 162
+                    > USED AT LINE 168
+DRAW_CELLS:         401F DEFINED AT LINE 76
+                    > USED AT LINE 140
+NEW_COLUMN:         4029 DEFINED AT LINE 82
+                    > USED AT LINE 93
+SKIP_DRAW:          4031 DEFINED AT LINE 88
+                    > USED AT LINE 85
+CALC_NEXT:          4038 DEFINED AT LINE 97
+NEXT_CELL:          4041 DEFINED AT LINE 102
+                    > USED AT LINE 131
+ROT_LOOP:           4058 DEFINED AT LINE 122
+                    > USED AT LINE 126
+ROT_DONE:           405E DEFINED AT LINE 127
+                    > USED AT LINE 124
+COPY_CELLS:         4064 DEFINED AT LINE 133
+FINISH:             4073 DEFINED AT LINE 143
+                    > USED AT LINE 79
+DISP_LOOP:          407F DEFINED AT LINE 152
+                    > USED AT LINE 155
+PLUS:               4085 DEFINED AT LINE 157
+MINUS:              4090 DEFINED AT LINE 163
+                    > USED AT LINE 159
+GET_CELL:           409A DEFINED AT LINE 171
+                    > USED AT LINE 106
+                    > USED AT LINE 111
+                    > USED AT LINE 116
+DISPLAY:            409F DEFINED AT LINE 178
+                    > USED AT LINE 149
+                    > USED AT LINE 153

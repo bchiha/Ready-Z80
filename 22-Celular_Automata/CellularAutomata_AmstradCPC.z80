@@ -1,0 +1,273 @@
+; Celular Automata for the Z80
+; ----------------------------
+; TEC-1G Amstrad CPC464 Version
+; ---------------------------------------
+; Code written by Brian Chiha
+;
+; In mathematics and computability theory, an elementary cellular
+; automaton is a one-dimensional cellular automaton where there are 
+; two possible states (labeled 0 and 1) and the rule to determine
+; the state of a cell in the next generation depends only on the
+; current state of the cell and its two immediate neighbors.
+; 
+; Consider a one dimensional array where each cell can contain only
+; two values, 1 or 0.  A cell in a one dimentional arrays will have 
+; two neighbors.  One to the left and one to the right.  Considering
+; the three cells with either 1 or 0 states, there are 2^3 or 8
+; different combinations.  The combination are:
+;
+;           111, 110, 101, 100, 011, 010, 001, 000
+;  RULE 6C   0    1    1    0    1    1    0    0
+;
+; For the next generation of cells, a rule can be applied based on
+; one of the 8 combinations above.  If 6C is the rule, its bits 
+; can represent the next generation.  IE: if the three cells are
+; 011 then the next cell will be a 1.  And if the cells are 100,
+; then the next cell will be a 0.  A rule can be from 0 to 255.
+;
+; Finally, if the first one dimentional array has all values set 
+; to 0 except its center cell set to 1.  When the rule is applied 
+; for each generation, patterns emerge.
+
+; Amstrad BIOS  Functions used	
+SETMODE:    EQU #BC0E        ;A=00,01,02; Sets the screen mode
+KEYWAT:     EQU #BB06        ;Wait for a key press
+PLOT_PIXEL: EQU #BBEA        ;Plot a pixel at DE,HL
+PRINT_CHAR: EQU #BB5A        ;A=ASCII character
+KEYWAIT:    EQU #BB18        ;Get Keyboard Press
+
+; Constants
+C_MAX_X:    EQU 128
+C_MAX_Y:    EQU 64
+
+; RAM Variables
+START_ADR:  EQU #8000   ;Start location of code
+
+RULE:       EQU START_ADR + #1FF    ;Rule value 0-255
+CELLS_CUR:  EQU START_ADR + #200   ;Current generation (128 bytes)
+CELLS_NXT:  EQU START_ADR + #280   ;Next generation
+
+        ORG START_ADR       ;Start Location
+
+INIT:
+        XOR A           ;Start Rule (Had to pick one!)
+        LD (RULE),A     ;Save the Rule
+START:
+        ;Set up Graphics LCD
+        LD A,1          ;Set Mode 1 (640x400)
+        CALL SETMODE
+        ;Initialise the first row of cells to 0
+        LD HL,CELLS_CUR     ;Set first cell to 0
+        LD DE,CELLS_CUR+1   ;And use LDIR to copy
+        XOR A               ;the first cell to the
+        LD (HL),A           ;next, 127 times
+        LD BC,C_MAX_X-1
+        LDIR
+        ;Set the middle cell (or near to it), to 1
+        LD A,1          
+        LD (CELLS_CUR+C_MAX_X/2),A ;set cell to 1
+        ;Set C to the first ROW which is 0
+        LD C,0
+        ;Draw the 1-D array to the current ROM
+DRAW_CELLS:
+        LD A,C          ;Get current ROW
+        CP C_MAX_Y      ;Is it at the last row?
+        JR Z,FINISH     ;Yes, jump to finish
+        LD DE,CELLS_CUR ;No, then set DE to current cells array
+        LD B,0          ;Set COLUMN to 0
+NEW_COLUMN:
+        LD A,(DE)       ;Get value stored in array
+        CP 1            ;Is current cell a 1?
+        JR NZ,SKIP_DRAW ;No, skip drawing a pixel
+        CALL DRAW_PIXEL ;Draw point on screen
+SKIP_DRAW:
+        INC DE          ;Move to next cell
+        INC B           ;Increment COLUMN position
+        LD A,B          ;Get new COLUMN
+        CP C_MAX_X      ;Is it the last column?
+        JR NZ,NEW_COLUMN ;No, display next cell
+        ;Calculate the next generation based on the three
+        ;cells and the Rule.  Current Cell is an aligned table
+        ;which makes it much easier to use.
+CALC_NEXT:
+        PUSH BC
+        LD HL,CELLS_CUR ;Point to start of cells array
+        LD DE,CELLS_NXT ;Load DE with Next Generation array
+        LD B,C_MAX_X    ;128 cells to calculate
+NEXT_CELL:
+        DEC L           ;Move L back two bytes to 
+        DEC L           ;look at HL-1 first
+        ;get HL-1
+        CALL GET_CELL   ;Get value in cell at "cell-1"
+        ADD A,A         ;Multiply by 4
+        ADD A,A
+        LD C,A          ;Save counter in C
+        ;get HL
+        CALL GET_CELL   ;Get value in cell at "cell"
+        ADD A,A         ;Multiply by 2
+        ADD A,C
+        LD C,A          ;Add value to counter
+        ;get HL+1
+        CALL GET_CELL   ;Get value in cell at "cell+1"
+        ADD A,C
+        LD C,A          ;Add value to counter
+        ;C now stores the bit in the rule to use. 0-7
+        CALL GET_RULE   ;Get rule from rule index (A)
+        INC C           ;Increment C to adjust for rotation loop
+ROT_LOOP:               ;Put bit needed in Bit 0
+        DEC C           ;Decrease counter
+        JR Z,ROT_DONE   ;if its zero, no more to do
+        RRCA            ;Rotate bits in rule to the right by 1
+        JR ROT_LOOP     ;loop again until counter=0
+ROT_DONE:
+        AND #01         ;Mask out all bits except Bit 0
+        LD (DE),A       ;Save value to Next Generation
+        INC DE          ;Move to next next generation cell
+        DJNZ NEXT_CELL  ;Repeat for 128 cells
+        ;Copy completed next generation cells to current cells
+COPY_CELLS:
+        LD DE,CELLS_CUR ;Use LDIR to copy 128 bytes from next
+        LD HL,CELLS_NXT ;to current cells array
+        LD BC,C_MAX_X
+        LDIR
+        POP BC
+        INC C           ;move to next ROW
+        JR DRAW_CELLS   ;repeate until all generations done
+        ;All pixels are plotted.  Display RULE and
+        ;handle keypad input to select a new rule
+FINISH:
+        LD DE,DISPLAY
+        LD B,38
+DISP_LOOP:
+        LD A,(DE)
+        INC DE
+        CALL PRINT_CHAR ;Display "RULE " at top left
+        DJNZ DISP_LOOP
+        CALL GET_RULE   ;Get current rule
+        CALL PRINT_A    ;Print rule in Decimal
+
+        CALL KEYWAIT    ;Check for key press
+        ;Key is pressed, check for Plus/Minus or other
+PLUS:
+        CP #F3          ;Is it a right arrow?
+        JR NZ,MINUS     ;No, check for minus
+        LD HL,RULE      ;Get rule and increment it
+        INC (HL)
+        JP START        ;Jump to start and display new rule
+MINUS:
+        CP #F2          ;is it a left arrow?
+        RET NZ          ;No, then exit the program
+        LD HL,RULE      ;Get rule and decrement it
+        DEC (HL)
+        JP START        ;Jump to start and display new rule
+
+        ;Get the cell value at HL+1 and adjust for boundry cells
+GET_CELL:
+        INC L           ;increment L
+        RES 7,L         ;remove bit 7 to wrap around if overflow
+        LD A,(HL)       ;Get value from HL
+        RET
+
+        ;Draw at pixel at B,C adjusted for CPC screens 640x400
+        ;DE = B * 5, HL = C * 5. 
+DRAW_PIXEL:
+        PUSH DE
+        PUSH BC
+        ;Get Actual X
+        LD HL,0
+        LD D,0
+        LD E,B
+        ADD HL,DE
+        ADD HL,DE
+        ADD HL,DE
+        ADD HL,DE
+        ADD HL,DE
+        EX DE,HL
+        LD HL,0
+        LD B,0
+        LD A,C_MAX_Y
+        SUB C
+        LD C,A
+        ADD HL,BC
+        ADD HL,BC
+        ADD HL,BC
+        ADD HL,BC
+        ADD HL,BC
+        CALL PLOT_PIXEL
+        POP BC
+        POP DE
+        RET
+
+;Inputs: L is the 8-bit unsigned int to convert
+;Output: A has the lower 2 digits (in BCD form), L has the upper
+L_TO_BCD:
+        LD H,0
+        ADD HL,HL
+        ADD HL,HL
+        ADD HL,HL
+        ADD HL,HL
+        LD A,H
+        DAA
+        RL L
+        ADC A,A
+        DAA
+        RL L
+        ADC A,A
+        DAA
+        RL L
+        ADC A,A
+        DAA
+        RL L
+        ADC A,A
+        DAA
+        RL L
+        RET
+
+; Print Register A to screen, First convert to BCD and 
+; Then to ASCII...
+PRINT_A:
+        LD L,A
+        CALL L_TO_BCD
+        PUSH AF
+        LD A,L
+        CALL A_TO_ASCII
+        POP AF
+
+A_TO_ASCII:
+        PUSH AF             ;save AF
+        RRCA                ;move high 
+        RRCA                ;nibble to
+        RRCA                ;low
+        RRCA                ;nibble
+        CALL NIBBLE2ASCII   ;call nib to ASCII routine
+        POP AF
+NIBBLE2ASCII:
+        AND #0F             ;mask out high nibble
+        ADD A,#90           ;convert to
+        DAA                 ;ASCII
+        ADC A,#40           ;using this
+        DAA                 ;amazing routine
+        CALL PRINT_CHAR
+        RET                 ;exit
+
+; Return one of the good patterns based on the rule index
+GET_RULE:
+        LD A,(RULE)
+        AND #0F             ;mod 16
+        PUSH HL
+        LD HL,GOOD_PATTERNS
+        ADD A,L
+        LD L,A
+        LD A,(HL)
+        POP HL
+        RET
+
+        ;Display buffer with seven segment values for the word RULE
+DISPLAY:
+        db "Elementary cellular automaton",#0D,#0A,#0D,#0A
+        db "RULE "
+
+GOOD_PATTERNS:
+        db 22,30,77,93,99,102,118,122
+        db 124,126,150,154,182,225,246,254
+
