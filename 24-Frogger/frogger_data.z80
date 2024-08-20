@@ -1,0 +1,279 @@
+;Frogger Sprite Data with masks
+;------------------------------
+;   first byte is the data
+;   second byte is mask
+;   continues, alternating like this.
+;Notes:
+;   To set a pixel...
+;     black: mask is 1, data is 0
+;     white: mask is 1, data is 1
+;     clear: mask is 0, data is 0 (keeps the data from the buffer)
+;     invert: mask is 0, data is 1 (inverts the data from the buffer)
+FROG_UP:
+        .db 00000000B
+        .db 10011001B
+        .db 00000000B
+        .db 10100101B
+        .db 00111100B
+        .db 01111110B
+        .db 00111100B
+        .db 01111110B
+        .db 00011000B
+        .db 00111100B
+        .db 00000000B
+        .db 00111100B
+        .db 00000000B
+        .db 01000010B
+        .db 00000000B
+        .db 01000010B
+
+FROG_DN:
+        .db 00000000B
+        .db 01000010B
+        .db 00000000B
+        .db 01000010B
+        .db 00000000B
+        .db 00111100B
+        .db 00011000B
+        .db 00111100B
+        .db 00111100B
+        .db 01111110B
+        .db 00111100B
+        .db 01111110B
+        .db 00000000B
+        .db 10100101B
+        .db 00000000B
+        .db 10011001B
+
+FROG_LT:
+        .db 00000000B
+        .db 11000000B
+        .db 00000000B
+        .db 00110011B
+        .db 00110000B
+        .db 01111100B
+        .db 01111000B
+        .db 11111100B
+        .db 01111000B
+        .db 11111100B
+        .db 00110000B
+        .db 01111100B
+        .db 00000000B
+        .db 00110011B
+        .db 00000000B
+        .db 11000000B
+
+FROG_RT:
+        .db 00000000B
+        .db 00000011B
+        .db 00000000B
+        .db 11001100B
+        .db 00001100B
+        .db 00111110B
+        .db 00011110B
+        .db 00111111B
+        .db 00011110B
+        .db 00111111B
+        .db 00001100B
+        .db 00111110B
+        .db 00000000B
+        .db 11001100B
+        .db 00000000B
+        .db 00000011B
+
+FROG_SPLAT:
+        .db 00111111B
+        .db 11111111B
+        .db 10011100B
+        .db 11111111B
+        .db 10000000B
+        .db 11111110B
+        .db 10000011B
+        .db 11111111B
+        .db 11000001B
+        .db 11111111B
+        .db 11000011B
+        .db 11111111B
+        .db 10101001B
+        .db 11111111B
+        .db 11101111B
+        .db 11111111B
+
+FROG_HOME:
+        .db 10011001B
+        .db 10100101B
+        .db 01000010B
+        .db 01000010B
+        .db 00100100B
+        .db 00111100B
+        .db 01000010B
+        .db 01000010B
+
+; Splash Screen data 128x64 pixels
+SPLASH_SCREEN:
+            .db  00H, 00H, 07H, 080H, 00H, 00H, 00H, 03H, 0C0H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 04H, 080H, 00H, 00H, 00H, 02H, 040H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 04H, 0FFH, 0FFH, 0FFH, 0FFH, 0E2H, 040H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  03EH, 00H, 0CH, 0AAH, 0AAH, 0AAH, 0AAH, 0A2H, 040H, 00H, 00H, 00H, 00H, 00H, 00H, 07CH
+            .db  016H, 00H, 034H, 0D5H, 055H, 055H, 055H, 062H, 040H, 00H, 00H, 03H, 080H, 00H, 00H, 048H
+            .db  016H, 00H, 0D4H, 0AAH, 0AAH, 0AAH, 0AAH, 0A2H, 040H, 00H, 00H, 0CH, 078H, 00H, 00H, 08H
+            .db  03EH, 01H, 024H, 0D5H, 055H, 055H, 055H, 062H, 040H, 00H, 00H, 038H, 07H, 080H, 00H, 038H
+            .db  014H, 01H, 0CCH, 0AAH, 0AAH, 0AAH, 0AAH, 0A2H, 040H, 00H, 00H, 061H, 0C0H, 060H, 00H, 020H
+            .db  014H, 01H, 014H, 0D5H, 055H, 055H, 055H, 062H, 040H, 00H, 00H, 040H, 0C0H, 010H, 00H, 024H
+            .db  036H, 01H, 024H, 0AAH, 0BFH, 0FFH, 0FFH, 0FFH, 0E0H, 00H, 00H, 0C0H, 0C0H, 08H, 00H, 07CH
+            .db  00H, 01H, 0CCH, 0D5H, 0D0H, 00H, 00H, 00H, 010H, 00H, 00H, 0C0H, 00H, 0F0H, 00H, 00H
+            .db  03EH, 01H, 014H, 0ABH, 010H, 00H, 00H, 00H, 08H, 00H, 01H, 080H, 01H, 00H, 00H, 038H
+            .db  012H, 01H, 024H, 0DCH, 010H, 0FFH, 0FBH, 0FFH, 088H, 00H, 07H, 00H, 06H, 00H, 00H, 06CH
+            .db  010H, 01H, 0CCH, 0A9H, 0D1H, 0FFH, 0FBH, 0FFH, 0C8H, 00H, 0EH, 00H, 08H, 00H, 00H, 06CH
+            .db  038H, 01H, 014H, 0DBH, 0D1H, 0FFH, 0FBH, 0FFH, 0C8H, 00H, 018H, 00H, 013H, 0E0H, 00H, 038H
+            .db  010H, 01H, 024H, 0ABH, 0D1H, 0FFH, 0FBH, 0FFH, 0C8H, 03FH, 0FCH, 00H, 02CH, 010H, 00H, 06CH
+            .db  012H, 01H, 0CCH, 0DBH, 0D1H, 0FFH, 0FBH, 0FFH, 0CFH, 0C0H, 07H, 00H, 040H, 010H, 00H, 06CH
+            .db  03EH, 01H, 018H, 06BH, 0D3H, 0E0H, 00H, 00H, 038H, 00H, 00H, 080H, 040H, 030H, 00H, 038H
+            .db  00H, 01H, 029H, 05BH, 0FCH, 080H, 00H, 00H, 010H, 00H, 00H, 00H, 083H, 0C0H, 00H, 00H
+            .db  03EH, 01H, 0C9H, 05BH, 0C0H, 081H, 0FFH, 0FFH, 0F0H, 0C7H, 080H, 01H, 04H, 00H, 00H, 038H
+            .db  014H, 01H, 019H, 05CH, 00H, 087H, 00H, 00H, 010H, 07CH, 080H, 00H, 08H, 00H, 00H, 06CH
+            .db  014H, 01H, 029H, 050H, 00H, 088H, 00H, 00H, 08H, 020H, 00H, 038H, 08H, 00H, 00H, 06CH
+            .db  03EH, 01H, 0C9H, 052H, 050H, 08FH, 0FFH, 0FFH, 0F8H, 030H, 01H, 0E0H, 08H, 00H, 00H, 06CH
+            .db  022H, 01H, 019H, 053H, 0D0H, 088H, 00H, 00H, 0EH, 010H, 03H, 00H, 08H, 00H, 00H, 06CH
+            .db  022H, 01H, 029H, 050H, 020H, 08FH, 0FFH, 0FFH, 0F9H, 08H, 04H, 00H, 018H, 00H, 00H, 06CH
+            .db  022H, 01H, 0C9H, 050H, 020H, 088H, 00H, 00H, 09H, 04H, 08H, 00H, 010H, 00H, 00H, 038H
+            .db  00H, 01H, 019H, 050H, 020H, 08FH, 0FFH, 0FFH, 0FCH, 086H, 0FH, 080H, 018H, 00H, 00H, 00H
+            .db  03CH, 01H, 029H, 050H, 020H, 088H, 00H, 00H, 02H, 042H, 010H, 080H, 028H, 00H, 00H, 00H
+            .db  016H, 01H, 0C9H, 050H, 040H, 08FH, 0FFH, 0FFH, 0FFH, 042H, 0E0H, 040H, 026H, 00H, 00H, 00H
+            .db  016H, 01H, 019H, 050H, 040H, 088H, 00H, 00H, 01H, 062H, 00H, 040H, 0C1H, 00H, 00H, 00H
+            .db  016H, 01H, 029H, 050H, 040H, 08FH, 0FFH, 0FFH, 0FFH, 0BEH, 00H, 043H, 0A1H, 080H, 00H, 00H
+            .db  016H, 01H, 0C8H, 070H, 040H, 088H, 00H, 00H, 01H, 084H, 00H, 07CH, 010H, 0C0H, 00H, 00H
+            .db  016H, 01H, 01FH, 0A1H, 0FEH, 08FH, 0FFH, 0FFH, 0FFH, 0C6H, 01H, 080H, 08H, 020H, 00H, 00H
+            .db  03CH, 01H, 024H, 086H, 00H, 084H, 00H, 00H, 00H, 042H, 06H, 00H, 04H, 010H, 00H, 00H
+            .db  00H, 01H, 0C9H, 098H, 07EH, 082H, 00H, 00H, 00H, 086H, 08H, 00H, 03H, 08H, 00H, 00H
+            .db  022H, 01H, 012H, 0E0H, 07EH, 081H, 0FFH, 0FFH, 0FFH, 084H, 010H, 00H, 01H, 08CH, 00H, 00H
+            .db  022H, 01H, 0E4H, 080H, 07EH, 080H, 00H, 00H, 01H, 04H, 021H, 0F0H, 00H, 084H, 00H, 00H
+            .db  036H, 01H, 088H, 0C0H, 00H, 080H, 00H, 00H, 02H, 0CH, 022H, 08H, 00H, 084H, 00H, 00H
+            .db  01CH, 01H, 0FFH, 0C3H, 0FFH, 0FFH, 0FFH, 0FFH, 0FEH, 08H, 02CH, 08H, 00H, 088H, 00H, 00H
+            .db  08H, 00H, 036H, 0C7H, 0FCH, 00H, 00H, 00H, 04H, 014H, 0F0H, 070H, 0FH, 08H, 00H, 00H
+            .db  08H, 00H, 019H, 0FFH, 08CH, 00H, 00H, 00H, 08H, 024H, 03H, 080H, 08H, 010H, 00H, 00H
+            .db  01CH, 00H, 01FH, 0C7H, 08CH, 00H, 00H, 00H, 08H, 062H, 04H, 00H, 08H, 060H, 00H, 00H
+            .db  00H, 00H, 0FH, 08FH, 04H, 00H, 00H, 00H, 010H, 0A1H, 08H, 00H, 07H, 0C0H, 00H, 00H
+            .db  00H, 00H, 00H, 0FH, 04H, 00H, 00H, 00H, 021H, 020H, 0F0H, 00H, 00H, 00H, 00H, 00H
+            .db  0FFH, 0FFH, 0FFH, 0EFH, 0FH, 0FFH, 0FFH, 0FFH, 0C1H, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  0FFH, 0FFH, 0FFH, 0EFH, 09FH, 0BFH, 0FFH, 0FFH, 083H, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  0FFH, 0FFH, 0FFH, 0E7H, 0FFH, 0BFH, 0FFH, 0FFH, 00H, 0D7H, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  0FFH, 0FFH, 0FFH, 0F7H, 0FFH, 03FH, 0FFH, 0FEH, 00H, 0FH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  0FFH, 0FFH, 0FFH, 0F0H, 00H, 07FH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  0FEH, 01H, 080H, 0F0H, 01FH, 080H, 060H, 03EH, 03H, 0F0H, 0FH, 0E0H, 0FCH, 03H, 03H, 0FFH
+            .db  0FCH, 00H, 00H, 040H, 0FH, 080H, 00H, 018H, 01H, 0C0H, 07H, 00H, 018H, 00H, 01H, 0FFH
+            .db  0FCH, 01H, 00H, 040H, 0FH, 080H, 040H, 018H, 00H, 0C0H, 03H, 00H, 08H, 00H, 00H, 0FFH
+            .db  0FFH, 08FH, 01FH, 087H, 0CFH, 08FH, 0C7H, 090H, 0F8H, 07H, 0E2H, 01FH, 08H, 0FEH, 038H, 0FFH
+            .db  0FFH, 08FH, 01FH, 08FH, 0FFH, 08FH, 0C7H, 091H, 0FCH, 0FH, 0E2H, 03FH, 088H, 0FEH, 03CH, 07FH
+            .db  0FFH, 08FH, 01H, 08FH, 0FFH, 08FH, 0C7H, 011H, 0FCH, 0FH, 0FCH, 03FH, 0F8H, 0FEH, 038H, 0FFH
+            .db  0FFH, 08FH, 03H, 08FH, 0FFH, 080H, 0C0H, 011H, 0FCH, 0EH, 00H, 038H, 00H, 06H, 00H, 0FFH
+            .db  0FFH, 08FH, 01FH, 08FH, 0FFH, 080H, 0C0H, 071H, 0FCH, 0EH, 00H, 038H, 00H, 06H, 01H, 0FFH
+            .db  0FFH, 08FH, 01FH, 08FH, 0CFH, 081H, 0C4H, 031H, 0F8H, 0FH, 0E0H, 03FH, 088H, 0FEH, 01H, 0FFH
+            .db  0FFH, 08FH, 00H, 07H, 08FH, 08FH, 0C6H, 010H, 0F0H, 083H, 0C2H, 01FH, 08H, 0FEH, 020H, 0FFH
+            .db  0FFH, 08FH, 00H, 040H, 0FH, 08FH, 0C7H, 08H, 00H, 0C0H, 02H, 00H, 08H, 02H, 030H, 07FH
+            .db  0FFH, 08FH, 00H, 0C0H, 01FH, 08FH, 0C7H, 088H, 01H, 0E0H, 07H, 00H, 018H, 00H, 038H, 07FH
+            .db  0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+
+; Crossing map data 128x64 pixels
+CROSSING_MAP:
+            .db  0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH
+            .db  0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0AAH
+            .db  055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H
+            .db  0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0AAH
+            .db  055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H
+            .db  0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0ABH, 00H, 0AAH, 0AAH
+            .db  055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H, 00H, 0D5H, 055H
+            .db  0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH, 00H, 0FFH, 0FFH
+            .db  022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  088H, 09FH, 0FFH, 0C8H, 087H, 0FFH, 0FFH, 0FFH, 0C8H, 088H, 09FH, 0FFH, 0C8H, 088H, 088H, 088H
+            .db  00H, 020H, 00H, 0A0H, 08H, 00H, 00H, 00H, 0A0H, 00H, 020H, 00H, 0A0H, 00H, 00H, 00H
+            .db  022H, 020H, 00H, 0A2H, 028H, 00H, 00H, 00H, 0A2H, 022H, 020H, 00H, 0A2H, 022H, 022H, 022H
+            .db  00H, 01FH, 0FFH, 0C0H, 07H, 0FFH, 0FFH, 0FFH, 0C0H, 00H, 01FH, 0FFH, 0C0H, 00H, 00H, 00H
+            .db  088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H, 022H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  087H, 0FFH, 0FFH, 0FFH, 0C8H, 088H, 089H, 0FFH, 0FCH, 088H, 088H, 07FH, 0FFH, 0FFH, 0FCH, 088H
+            .db  08H, 00H, 00H, 00H, 0A0H, 00H, 02H, 00H, 0AH, 00H, 00H, 080H, 00H, 00H, 0AH, 00H
+            .db  028H, 00H, 00H, 00H, 0A2H, 022H, 022H, 00H, 0AH, 022H, 022H, 080H, 00H, 00H, 0AH, 022H
+            .db  07H, 0FFH, 0FFH, 0FFH, 0C0H, 00H, 01H, 0FFH, 0FCH, 00H, 00H, 07FH, 0FFH, 0FFH, 0FCH, 00H
+            .db  088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H, 088H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH
+            .db  03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  00H, 01CH, 07H, 00H, 00H, 00H, 038H, 0EH, 00H, 00H, 07H, 01H, 0C0H, 00H, 00H, 00H
+            .db  00H, 09H, 0F2H, 00H, 00H, 00H, 013H, 0E4H, 00H, 00H, 02H, 07CH, 080H, 00H, 00H, 00H
+            .db  00H, 01FH, 01EH, 00H, 00H, 00H, 03EH, 03CH, 00H, 00H, 07H, 0C7H, 080H, 00H, 00H, 00H
+            .db  00H, 018H, 0FH, 00H, 00H, 00H, 030H, 01EH, 00H, 00H, 06H, 03H, 0C0H, 00H, 00H, 00H
+            .db  00H, 01FH, 01EH, 00H, 00H, 00H, 03EH, 03CH, 00H, 00H, 07H, 0C7H, 080H, 00H, 00H, 00H
+            .db  00H, 09H, 0F2H, 00H, 00H, 00H, 013H, 0E4H, 00H, 00H, 02H, 07CH, 080H, 00H, 00H, 00H
+            .db  00H, 01CH, 07H, 00H, 00H, 00H, 038H, 0EH, 00H, 00H, 07H, 01H, 0C0H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 018H, 060H, 00H, 00H, 00H, 01H, 086H, 00H, 00H, 00H, 00H, 03H, 0CH
+            .db  00H, 00H, 09FH, 0E7H, 090H, 00H, 00H, 09H, 0FEH, 079H, 00H, 00H, 00H, 013H, 0FCH, 0F2H
+            .db  00H, 00H, 060H, 040H, 08H, 00H, 00H, 06H, 04H, 00H, 080H, 00H, 00H, 0CH, 08H, 01H
+            .db  00H, 00H, 020H, 044H, 028H, 00H, 00H, 02H, 04H, 042H, 080H, 00H, 00H, 04H, 08H, 085H
+            .db  00H, 00H, 010H, 04CH, 068H, 00H, 00H, 01H, 04H, 0C6H, 080H, 00H, 00H, 02H, 09H, 08DH
+            .db  00H, 00H, 0FH, 0E0H, 010H, 00H, 00H, 00H, 0FEH, 01H, 00H, 00H, 00H, 01H, 0FCH, 02H
+            .db  00H, 00H, 02H, 09FH, 0E0H, 00H, 00H, 00H, 029H, 0FEH, 00H, 00H, 00H, 00H, 053H, 0FCH
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 0EH, 07FH, 0FFH, 00H, 00H, 00H, 00H, 00H, 00H, 0E7H, 0FFH, 0F0H
+            .db  00H, 00H, 00H, 00H, 01FH, 040H, 03H, 00H, 00H, 00H, 00H, 00H, 01H, 0F4H, 00H, 030H
+            .db  00H, 00H, 00H, 00H, 011H, 0C0H, 03H, 00H, 00H, 00H, 00H, 00H, 01H, 01CH, 00H, 030H
+            .db  00H, 00H, 00H, 00H, 011H, 0C0H, 03H, 00H, 00H, 00H, 00H, 00H, 01H, 01CH, 00H, 030H
+            .db  00H, 00H, 00H, 00H, 011H, 0C0H, 03H, 00H, 00H, 00H, 00H, 00H, 01H, 01CH, 00H, 030H
+            .db  00H, 00H, 00H, 00H, 01FH, 040H, 03H, 00H, 00H, 00H, 00H, 00H, 01H, 0F4H, 00H, 030H
+            .db  00H, 00H, 00H, 00H, 0EH, 07FH, 0FFH, 00H, 00H, 00H, 00H, 00H, 00H, 0E7H, 0FFH, 0F0H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH, 03CH
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+            .db  00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H, 00H
+
+; Music data for MON3 music routine
+TUNE_DATA:
+        .db 0DH,0DH,0AH,0AH,05H,05H,0AH,0AH ;GGEEbbEE
+        .db 0DH,0DH,0AH,0AH,05H,05H,0AH,0AH ;GGEEbbEE
+        .db 0FH,0FH,0FH,0FH,0DH,0DH,0DH,0DH ;AAAAGGGG
+        .db 0BH,0BH,00H,00H,00H,00H,00H,00H ;FFRRRRRR
+        .db 0FH,0FH,0FH,0FH,0DH,0DH,0DH,0DH ;AAAAGGGG
+        .db 0BH,0BH,0BH,0BH,12H,12H,12H,12H ;FFFFCCCC
+        .db 11H,11H,0FH,0FH,0DH,0DH,0BH,0BH ;BBAAGGFF
+        .db 0AH,0AH,00H,00H,00H,00H,00H,00H ;EERRRRRR
+        .db 19H
+
+DEATH_DATA:
+        .db 0FH,0DH,0BH,0AH,06H,06H,06H,06H ;AGFECCCC
+        .db 19H
+
+SAFE_DATA:
+        .db 0DH,0BH,0DH,0BH,11H,11H,0FH,11H ;GFGFBBAB
+        .db 0FH,0DH,0BH,0DH,11H,12H,12H,12H ;AGFGBCCC
+        .db 19H
+
+; Frog character for the LCD
+FROG_LCD:
+        ;left facing
+        .db 07H,0AH,10H,08H,07H,04H,18H,00H ;Frog Front
+        .db 18H,0EH,01H,01H,0EH,02H,0CH,00H ;Frog Back
+        ;right facing
+        .db 03H,0EH,10H,10H,0EH,08H,06H,00H ;Frog Back
+        .db 1CH,0AH,01H,02H,1CH,04H,03H,00H ;Frog Front
+        ;death
+        .db 00H,0EH,15H,1BH,0EH,0EH,00H,00H ;Skull
+        ;winner
+        .db 00H,0AH,1FH,1FH,0EH,04H,00H,00H ;Heart
+

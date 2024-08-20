@@ -1,0 +1,803 @@
+; ************************************************************
+;                   _________________________
+;                   ___  __/__  ____/_  ____/
+;                   __  /  __  __/  _  /
+;                   _  /   _  /___  / /___
+;                   /_/    /_____/  \____/
+;  _________________________________________________________
+;  ___  ____/__  __ \_  __ \_  ____/_  ____/__  ____/__  __ \
+;  __  /_   __  /_/ /  / / /  / __ _  / __ __  __/  __  /_/ /
+;  _  __/   _  _, _// /_/ // /_/ / / /_/ / _  /___  _  _, _/
+;  /_/      /_/ |_| \____/ \____/  \____/  /_____/  /_/ |_|
+;
+;                By Brian Chiha (Ready? Z80) 2024
+; ************************************************************
+
+; This is my version of the classic 80's 8-bit game FROGGER
+; The game is simple, move the FROG from the bottom of the
+; screen to safe zones at the top of the screen.  But the 
+; frog will need to cross a busy road and navigate a swamp
+; to make it without being killed!
+;
+; This game is written on Z80 Assembly for the TEC-1G Z80 
+; computer.  It requires the Graphical LCD add-on board which
+; is the main interface of the game.  The Hex Keypad on the 
+; TEC-1G can be used to navigate the frog.  Also, the full
+; matrix keyboard (add-on) or a Joystick!
+; This program also uses Mon3 (Monitor v3 for the TEC) API
+; calls, but the GLCD calls handled within this file as I 
+; needed them to be very fast.
+;
+; Variables
+; ---------
+FROG_XY:        .equ 3000H      ;Frog XY postion (2 bytes)
+FROG_Y:         .equ FROG_XY    ;Frog Position Y
+FROG_X:         .equ FROG_XY+1  ;Frog Position X
+DIRECTION:      .equ 3002H      ;Frog Direction (1 byte)
+MOVE_DELAY:     .equ 3003H      ;Log/Car Movement delay timer (1 byte)
+MOVES:          .equ 3004H      ;Frog Moves for scoring (1 byte)
+INPUT:          .equ 3005H      ;Input Selection (1 byte)
+TUNE_PLAYED:    .equ 3006H      ;Tune Played Flag (1 byte)
+LAST_KEY:       .equ 3007H      ;Last key pressed (1 byte)
+BG_CHECKSUM:    .equ 3008H      ;Checksum of Crossing map behind frog (1 byte)
+LIVES:          .equ 3009H      ;Lives (1 byte)
+SCORE:          .equ 300AH      ;Score (2 byte)
+SCORE_BUF:      .equ 300CH      ;Score ASCII buffer (5 bytes)
+FROGS_LEFT:     .equ 3011H      ;Remaining frogs to save (1 byte)
+FROGS_SAVED:    .equ 3012H      ;Bit Sets for saved frogs (1 byte)
+HSCORE:         .equ 3013H      ;High Score (2 byte)
+HSCORE_BUF:     .equ 3015H      ;High Score ASCII buffer (5 bytes)
+
+BG_MAP:         .equ 2000H      ;Crossing Map Data (1024 bytes)
+
+; Constants
+; ---------
+GLCD_INST:      .equ 07H        ;Graphics LCD Port Instruction
+GLCD_DATA:      .equ 87H        ;Graphics LCD Port Data
+SFROG_X:        .equ 56         ;Start Frog X
+SFROG_Y:        .equ 56         ;Start Frog Y
+CR:             .equ 0DH        ;Carriage Return
+
+; Key press
+; ---------
+KEY_PLUS:       .equ 10H        ;Plus Key
+KEY_MINUS:      .equ 11H        ;Minus Key
+KEY_GO:         .equ 12H        ;GO Key
+KEY_AD:         .equ 13H        ;AD Key
+KEY_FIRE2:      .equ 10H        ;Fire 2 Joystick
+KEY_ENTER:      .equ 0AH        ;Enter Matrix Keyboard
+
+; Mon3 API Calls
+; --------------
+BEEP:           .equ 03H        ;Beep the speaker
+HL_TO_STR:      .equ 08H        ;Convert Register HL to ASCII
+SCAN_7SEGS:     .equ 0AH        ;Scan the Seven Segment displays
+STR_TO_LCD:     .equ 0DH        ;String to LCD
+CHR_TO_LCD:     .equ 0EH        ;Character to LCD
+CMD_TO_LCD:     .equ 0FH        ;Command to LCD
+HEX_SCAN:       .equ 10H        ;Hex Pad Key Scan
+MATRIX_SCAN:    .equ 12H        ;Matrix Keyboard Scan
+JOY_SCAN:       .equ 13H        ;Joystick Scan
+TIME_DELAY:     .equ 21H        ;Time Delay
+PLAY_TUNE:      .equ 23H        ;Play a tune
+
+; Start of code
+        org 4000H       ;Start at address 4000
+preStart:
+        xor a                       ;Zero High Score
+        ld (HSCORE),a               ;reset high score
+        ld (HSCORE+1),a
+        ld (INPUT),a
+start:
+        call initLCD                ;reboot the LCD
+        ;Display spash screen on GLCD
+        call initGLCD               ;reset and clear LCD screen
+        ld hl,SPLASH_SCREEN         ;load spash screen to HL
+        ld de,GBUF                  
+        ld bc,16*64
+        call fastldir               ;and copy it to the graphics buffer GBUF
+        call plotToLCD              ;draw GBUF to the GLCD
+        ;Default input to HEX PAD, LAST KEY and PLAY TUNE to false
+        xor a                       ;HEX PAD input default
+        ld (TUNE_PLAYED),a
+        ld (LAST_KEY),a             ;clear last key press
+        ld (SCORE),a                ;reset score
+        ld (SCORE+1),a
+        ld (FROGS_SAVED),a          ;no saved frogs yet
+        ld a,3                      ;lives left
+        ld (LIVES),a
+        ld a,5                      ;frogs to save
+        ld (FROGS_LEFT),a
+        ;Create custom characters for LCD (Char 1-6)
+        ld b,48H                    ;CGRAM entry (1)
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld b,48                     ;five characters 6*8
+        ld c,CHR_TO_LCD             ;character to LCD
+        ld hl,FROG_LCD              ;frog lcd table
+lcdCharLoop:
+        ld a,(hl)                   ;get data byte
+        inc hl                      ;move to next byte
+        rst 10H                     ;API Call
+        djnz lcdCharLoop            ;repeat for all bytes
+        ;Display menu on LCD
+lcdMenu:
+        ld b,01H                    ;clear LCD instruction
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld hl,lcdIntroMessage       ;load message text
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        ;Set Input Arrows to current INPUT method
+        ld a,(INPUT)                ;Get input selection
+        rlca                        ;Ax2
+        ld de,lcdInputArrows        ;map to column table
+        add a,e                     ;index table with A
+        ld e,a
+        ld a,(de)                   ;get right arrow column
+        ld b,a
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld a,"[";7EH                    ;right arrow
+        ld c,CHR_TO_LCD             ;character to lcd call
+        rst 10H                     ;API Call
+        inc de          
+        ld a,(de)                   ;get left arrow column
+        ld b,a
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld a,"]";7FH                    ;left arrow
+        ld c,CHR_TO_LCD             ;character to lcd call
+        rst 10H                     ;API Call
+        ;Wait for key press
+MenuKeyLoop:
+        rst 08H                     ;Key wait until pressed
+        cp KEY_GO                   ;Is GO Pressed?
+        jr z,startGame              ;Yes, run game
+        cp KEY_AD                   ;Is AD Pressed?
+        jr z,help                   ;Yes, display help
+        ld b,1
+        cp KEY_PLUS                 ;Is PLUS Pressed?
+        jr z,moveCursor             ;Yes Move Cursor
+        ld b,-1
+        cp KEY_MINUS                ;Is MINUS Pressed?
+        jr nz,MenuKeyLoop           ;No, loop menu
+moveCursor:
+        ld a,(INPUT)                ;Get Input Method
+        add a,b                     ;move it by one
+        and 03H                     ;mask out crap
+        cp 03H                      ;is it 3?
+        jr nz,$+3                   ;no, use as is
+        xor a                       ;make zero
+        ld (INPUT),a                ;save new input method
+        jr lcdMenu                  ;redraw menu
+        ;Display help
+help:
+        ld b,01H                    ;clear LCD instruction
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld hl,lcdHelpMessage        ;load message text
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        ;Get key press
+        rst 08H                     ;Wait for key
+        jr lcdMenu
+        ;Play the game!
+startGame:
+        ;Update Game LCD
+        call updateLCD
+        ;Clear GLCD
+        call initGLCD               ;clear the GLCD
+        ;Starting conditions
+        ld b,SFROG_X                ;initial frog x pos
+        ld c,SFROG_Y                ;initial frog y pos
+        ld (FROG_XY),bc             ;save frog position
+        xor a                       ;clear A
+        ld (DIRECTION),a            ;inital up direction
+        ld (MOVE_DELAY),a           ;move delay 0
+        ld (MOVES),a                ;number of moves per frog
+        ;Copy crossing map to RAM
+        ld hl,CROSSING_MAP          ;load crossing map to HL
+        ld de,BG_MAP
+        ld bc,16*64
+        call fastldir               ;and copy it to the graphics buffer GBUF
+        ;Add saved frogs to BG_MAP
+        ld a,(FROGS_SAVED)          ;get frogs saved bits
+        ld d,a                      ;save mask in D
+        ld e,5                      ;five zones
+        ld a,0FEH                   ;1-3
+savedLoop:
+        add a,3                     ;add 3 bytes
+        srl d                       ;shift right
+        call c,drawSaved            ;draw a saved frog
+        dec e
+        jr nz,savedLoop
+
+        ;Main Game Draw Loop
+drawLoop:
+        ;draw the crossing map and the frog in the current position
+        call drawMapAndFrog
+        ;play intro music on first run
+        ld a,(TUNE_PLAYED)          ;check if first run of game
+        or a                        ;is it false?
+        jr nz,skipTune              ;no, then skip tune
+        inc a
+        ld (TUNE_PLAYED),a          ;make play tune true
+        ld de,TUNE_DATA             ;Music data
+        call playTune               ;play the start tune
+skipTune:
+        ;scan the input for movement, and move the frog if valid
+        call getKeyPress            ;check for key press
+        ;calculate checksum under frog (prior to displaying it)
+        call getBGChecksum          ;get the checksum of bytes under frog
+        ld a,d
+        ld (BG_CHECKSUM),a          ;store checksum in ram
+        ;move the cars and logs, which includes the frog if on a log!
+        ld hl,BG_MAP+128            ;top logs
+        call rotateright            ;rotate 8x128 pixels right
+        ld hl,BG_MAP+512            ;racing car
+        call rotateleft             ;rotate 8x128 pixels left
+        ;move frog if on top log on pixel right
+        ld bc,(FROG_XY)             ;get current frog postion
+        ld a,c
+        cp 08h                      ;is it on TOP log row?
+        jr nz,skipMove              ;no don't move frog
+        ld a,b
+        inc a
+        ld (FROG_X),a               ;move frog 1 pixel to the right
+        cp 121                      ;is frog off the screen (128-8+1)
+        jp nc,death                 ;frog moved off the screen, kill it
+skipMove:
+        ld hl,MOVE_DELAY            ;get move delay
+        ld a,(hl)
+        or a                        ;is it zero?
+        jr z,moveTheRest            ;yes, move the other logs/cars
+        dec (hl)                    ;decrease move delay count to 0
+        jr checkCollision           ;no more needed, check for collision
+moveTheRest:
+        ld (hl),1                   ;set move count to 1 IE: skip one drawloop cycle
+        ld hl,BG_MAP+256            ;bottom logs
+        call rotateleft             ;rotate 8x128 pixels left
+        ld hl,BG_MAP+640            ;nyan cat
+        call rotateright            ;rotate 8x128 pixels right
+        ld hl,BG_MAP+768            ;truck
+        call rotateleft             ;rotate 8x128 pixels left
+        ;move frog if on bottom log one pixel left
+        ld bc,(FROG_XY)             ;get current cursor
+        ld a,c
+        cp 10h                      ;is it on BOTTOM log row?
+        jr nz,checkCollision        ;no, check for collision
+        ld a,b
+        dec a
+        jp m,death                  ;frog moved off the screen, kill it
+        ld (FROG_X),a               ;move from one pixel left
+; Check for collision of frog and bad enemies
+checkCollision:
+        ld a,(FROG_Y)               ;get verical position
+        ;if on Home level, then check if in clear
+checkHome:
+        cp 00H                      ;is it on top home line?
+        jr nz,checkRoad             ;no, check road
+        ld a,(BG_CHECKSUM)          ;get the checksum of bytes under frog
+        or a                        ;is it zero? (left and center)
+        jr z,safe                   ;yes, its safe!
+        cp 08H                      ;is it 08H, on right edge
+        jr nz,death                 ;no, the jump to death
+safe:
+        call drawMapAndFrog         ;update its last position
+        ;frog is safe, play a tune
+        ld de,SAFE_DATA             ;Music data
+        call playTune               ;play the tune
+        ;save it on map
+        ; 1: 07-09    safe X zones
+        ; 2: 1F-21
+        ; 3: 37-39
+        ; 4: 4F-51
+        ; 5: 67-69
+        ld a,(FROG_X)               ;get horizontal position.  Must be one of the above
+        inc a                       ;round up
+        and 0F8H                    ;mask out low bit
+        ; a is now 08,20,38,50,68
+        ld b,1                      ;set bit 0
+bitloop:
+        cp 08H                      ;is it on the first safe zone?
+        jr z,bitexit                ;yes exit
+        sla b                       ;shift bit
+        sub 24                      ;24 pixels between safe zones
+        jr bitloop
+bitexit:
+        ; B is now the bit to set to 1,2,4,8,10
+        ld a,(FROGS_SAVED)
+        or b                        ;add B mask
+        ld (FROGS_SAVED),a          ;save it back
+        ;update score
+        ld a,(MOVES)                ;get number of moves
+        cpl                         ;adjust for real score, less moves, higher score
+        call byteToBCD              ;convert to 16 bit BCD
+        ld a,(SCORE)                ;LSB of 16 bytes score
+        add a,l                     ;add score to moves
+        daa                         ;BCD adjust
+        ld (SCORE),a                ;save it back
+        ld a,(SCORE+1)              ;MSB of score
+        adc a,h                     ;update for overflow
+        daa                         ;BCD adjust        
+        ld (SCORE+1),a              ;save it back
+        ;update high score
+        ld de,(SCORE)               ;get current score
+        ld hl,(HSCORE)              ;get cureent high score
+        or a                        ;clear carry
+        sbc hl,de                   ;see if current score > high score
+        jr nc,skipHScore            ;no is the same or less
+        ld (HSCORE),de              ;save current score as high score
+skipHScore:
+        ;check if all frogs are safe
+        ld hl,FROGS_LEFT            ;get frogs left count
+        dec (hl)                    ;decrease it
+        ;go to end game choice
+        jr endGameChoice            ;update LCD's and wait for key press based on Zero Flag
+        ;if on road and check sum isn't zero, a collision has occured
+checkRoad:
+        cp 20H                      ;higher than road
+        jr c,checkWater
+        cp 38H                      ;on land before road
+        jr z,checkWater
+        ld a,(BG_CHECKSUM)          ;get the checksum of bytes under frog
+        or a                        ;is it zero?
+        jr nz,death                 ;no, it hit a vehicle
+        jp drawLoop                 ;repeat draw loop
+checkWater:
+        ;if on water and check sum is 54H or AAH then frog is in water
+        cp 08H                      ;higher than water
+        jp c,drawLoop
+        cp 11H                      ;higher than path
+        jp nc,drawLoop
+        ld a,(BG_CHECKSUM)          ;get the checksum of bytes under frog
+        cp 54H
+        jr z,death
+        cp 0AAH
+        jp nz,drawLoop              ;repeat draw loop
+        ;fall through to death
+; Come here if the Frog dies :(
+death:
+        call drawMapAndFrog         ;update its last position
+        ;draw dead frog
+        ld bc,(FROG_XY)             ;get current frog position
+        ld ix,FROG_SPLAT            ;map IX to FROG Splat Sprite
+        ;draw frog
+        call putsprite_masked
+        call plotToLCD              ;update the GLCD
+        ;play sound
+        ld de,DEATH_DATA            ;Music data
+        call playTune               ;play the tune
+        ;reduce lives and check for 0 lives left
+        ld hl,LIVES
+        dec (hl)
+;based on Zero Flag, if true, then end game, otherwise continue to next round
+endGameChoice:
+        ld hl,startGame             ;return address
+        jr nz,deathUpdate           ;still more lives, wait for key press
+        ;no lives left.  Flip Screen
+        ld b,4                      ;four flips
+        call invertScreen           ;invert and beep screen
+        ld hl,start                 ;return address
+        ;wait for key press
+deathUpdate:
+        push hl                     ;push reutrn address on stack
+        ;update LCD
+        call updateLCD              ;refresh the LCD with lives lost / game over / or victory
+deathKey:
+        ;wait for either GO, Enter, or Fire 2 to continue
+        ld a,(INPUT)                ;get input mode, 0=HEX,1=Matrix,2=Joy
+        or a                        ;is it HEX pad?
+        jr z,checkHEX1
+        dec a
+        jr z,checkMAT1
+        ;must be joy
+checkJOY1:
+        ld c,JOY_SCAN               ;get joystick press
+        rst 10H                     ;API Call
+        jr z,checkJOY1              ;No key press, loop until
+        cp KEY_FIRE2                ;is it FIRE 2?
+        jr nz,checkJOY1             ;no, loop again
+        ret                         ;return to startGame or start of program
+checkHEX1:
+        rst 08H                     ;wait for key press
+        cp KEY_GO                   ;is it GO?
+        jr nz,checkHEX1             ;loop if not GO
+        ret                         ;return to startGame or start of program
+checkMAT1:        
+        ld c,MATRIX_SCAN            ;get matrix press
+        rst 10H                     ;API Call
+        jr nz,checkMAT1             ;No key press
+        ld a,e                      ;get key
+        cp KEY_ENTER                ;is it enter?
+        jr nz,checkMAT1             ;no, loop again
+        ret                         ;return to startGame or start of program
+
+; Check for key press on desired input mode. If a valid movement is 
+; detected then move the frog
+getKeyPress:
+;get key but don't wait for key hit
+        ld b,4                      ;four keys
+        ld a,(INPUT)                ;get input mode, 0=HEX,1=Matrix,2=Joy
+        or a                        ;is it HEX pad?
+        jr z,checkHEX
+        dec a
+        jr z,checkMAT
+        ;must be joy
+        ld c,JOY_SCAN               ;get joystick press
+        rst 10H                     ;API Call
+        jr z,ResetKey               ;No key press
+        ld hl,map_joy               ;joystick key map
+CheckKeyLoop:
+        ld c,(hl)
+        inc hl
+        cp c                        ;is it the key?
+        jr z,keyGood                ;yes
+        djnz CheckKeyLoop
+ResetKey:
+        xor a                       ;a=0
+        ld (LAST_KEY),a             ;save 0 to last key
+        ret                         ;invalid key just exit
+checkHEX:
+        ld c,HEX_SCAN               ;get hexpad press
+        rst 10H                     ;API Call
+        jr nz,ResetKey              ;No key press
+        ld hl,map_hex               ;hexpad key map
+        jr CheckKeyLoop             ;check key
+checkMAT:
+        ld c,MATRIX_SCAN            ;get matrix press
+        rst 10H                     ;API Call
+        jr nz,ResetKey              ;No key press
+        ld b,4                      ;reload count as b gets clobbered
+        ld hl,map_mat               ;matrix key map
+        ld a,e                      ;matrix key to A
+        jr CheckKeyLoop             ;check key
+        ;key is good, now move the frog
+keyGood:
+        ;check for key repeat
+        ld a,(LAST_KEY)             ;get last key
+        cp b                        ;is it the same?
+        ret z                       ;yes, ignore the move
+        ;play a beep
+        ld c,BEEP                   ;make a short beep on frog move
+        rst 10H                     ;API Call
+        ld hl,MOVES                 ;get move count
+        inc (HL)                    ;increase it
+        ld a,b                      ;B is the key counter, 4=UP,3=DN,2=LF,1=RT
+        ld (LAST_KEY),a             ;Save the new key
+        ld bc,(FROG_XY)             ;Get Frog current X,Y position
+k_up:
+        cp 04H                      ;up
+        jr nz,k_dn
+        inc c
+        dec c
+        ret z                       ;reached top
+        ld a,c
+        sub 8                       ;move up one spot
+        ld (FROG_Y),a               ;save new spot
+        xor a                       ;up
+        ld (DIRECTION),a
+        ret
+k_dn:
+        cp 03H                      ;down
+        jr nz,k_lt
+        ld a,c
+        cp 56
+        ret z                       ;reached bottom
+        ld a,c
+        add a,8                     ;move down one spot
+        ld (FROG_Y),a               ;save new spot
+        ld a,1                      ;down
+        ld (DIRECTION),a
+        ret
+k_lt:
+        cp 02H                      ;left
+        jr nz,k_rt
+        ld a,b
+        sub 8                       ;move left one spot
+        jr nc,move_lt               ;ok move
+        pop hl                      ;fake pop to remove return address
+        jp death                    ;kill it
+move_lt:
+        ld (FROG_X),a               ;save new spot
+        ld a,2                      ;left
+        ld (DIRECTION),a
+        ret
+k_rt:
+        ld a,b                      ;Can only be right
+        add a,8                     ;move right one spot
+        cp 121                      ;too far to the right
+        jr c,move_rt                ;ok move
+        pop hl                      ;fake pop to remove return address
+        jp death                    ;kill it
+move_rt:
+        ld (FROG_X),a               ;save new spot
+        ld a,3                      ;right
+        ld (DIRECTION),a
+        ret
+
+; Reference to input return for Up,Down,Left,Right based in input method
+map_joy:
+        .db 01H,02H,04H,08H
+map_hex:
+        .db 09H,01H,04H,06H
+map_mat:
+        .db 03H,04H,05H,06H
+
+; Get Background pixel count.  
+; Get the total count of all bytes under frog as a checksum (one byte).
+; The results will be able to detect if a collision has occured.
+; return: D=checksum
+getBGChecksum:
+        ld bc,(FROG_XY)
+        ld de,0008H                 ;D=checksum and E=byte loop
+bgRow:
+        push de
+        call findPixel              ;HL = address of byte under frog, A = pixel bit
+        ld d,(hl)                   ;store it in HL
+        inc hl
+        ld l,(hl)
+        ld h,d
+        pop de
+        rla                         ;check if A is bit 7, no shifting needed
+        jr c,BGloopexit
+getBGloop:
+        sla l                       ;shift second byte left
+        rl h                        ;rotate first byte left, which will add the carry flag to the LSB if it was set
+        rla                         ;dec counter
+        jr nc,getBGloop             ;loop again if req'd
+BGloopexit:
+        ;h now contains full byte underneith frog
+        ld a,h
+        add a,d                     ;add to checksum D
+        ld d,a
+        inc c                       ;move down one row
+        dec e                       ;decrease loop count
+        jr nz,bgRow                 ;do next byte until all eight bytes a added to D
+        ret
+
+;draw map and frog in it correct direction
+drawMapAndFrog:
+        ;draw crossing map
+        ld hl,BG_MAP                ;load crossing map to HL
+        ld de,GBUF
+        ld bc,16*64
+        call fastldir               ;and copy it to the graphics buffer GBUF
+        ;draw frog
+        ld bc,(FROG_XY)             ;get current frog position
+        ld a,(DIRECTION)            ;and its direction
+        rlca                        ;Index A by 16
+        rlca
+        rlca
+        rlca
+        ld ix,FROG_UP               ;map IX to first FROG Sprite
+        add a,ixl
+        ld ixl,a
+        jr nc,$+4
+        inc ixh                     ;index IX to the correct Sprite
+        ;draw frog
+        call putsprite_masked
+        call plotToLCD              ;update the GLCD
+        ret
+
+;draw a frog in the saved position
+;Input: A = X pixel
+drawSaved:
+        push af                     ;save AF
+        push de                     ;save DE
+        ld l,a                      ;X position
+        ld h,0                      ;Y position
+        ld de,BG_MAP
+        add hl,de                   ;Index BG_MAP to correct spot
+        ld de,FROG_HOME             ;Home Frog
+        ld b,8                      ;eight bytes
+drawcopy:
+        ld a,(de)                   ;get frog data
+        inc de
+        ld (hl),a                   ;update BG_MAP
+        ld a,16                     ;16 bytes
+        add a,l
+        ld l,a                      ;index L for next row
+        djnz drawcopy
+        pop de                      ;restore DE
+        pop af                      ;restore AF
+        ret
+
+; Game Loop LCD screen.  Display the active game information on the LCG
+updateLCD:
+        ld b,01H                    ;clear LCD instruction
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ;Display lives and score
+        ld hl,lcdLives              ;load message text
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        ld b,0D4H                   ;row 4, column 1
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld hl,lcdScore              ;load message text
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        ;Display frogs
+        ld b,9BH                    ;row 3, column 8
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld a,(FROGS_LEFT)           ;get remaining frogs to save
+        or a                        ;is it zero?
+        jr z,printVictory           ;yes, display victory
+        ld a,(LIVES)                ;get lives count
+        or a                        ;is it zero?
+        jr z,printGameOver          ;yes, display game over for lives
+        ld b,a                      ;store in B
+printFrogLoop:
+        ld hl,lcdFrog               ;load frog
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        djnz printFrogLoop          ;print all lives
+        jr displayScore             ;cont.
+printVictory:
+        ld hl,lcdVictory            ;load message
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        jr displayScore             ;cont.
+printGameOver:
+        ld hl,lcdGameOver           ;load message
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+displayScore:
+        ;Display score
+        ld b,0DBH                   ;row 4, column 8
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld hl,(SCORE)               ;get score
+        ld c,HL_TO_STR              ;convert to ASCII call
+        ld de,SCORE_BUF             ;score buffer
+        rst 10H                     ;API Call
+        xor a                       ;clear A
+        ld (de),a                   ;save to end of string
+        ld hl,SCORE_BUF             ;load message text
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        ;Display high score
+        ld b,0E4H                   ;row 4, column 16
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld hl,(HSCORE)              ;get high score
+        ld c,HL_TO_STR              ;convert to ASCII call
+        ld de,HSCORE_BUF            ;high score buffer
+        rst 10H                     ;API Call
+        xor a                       ;clear A
+        ld (de),a                   ;save to end of string
+        ld hl,HSCORE_BUF            ;load message text
+        ld c,STR_TO_LCD             ;string to lcd call
+        rst 10H                     ;API Call
+        ret
+
+; Play the Frogger Intro Tune
+playTune:
+        ld c,PLAY_TUNE              ;Play Tune API call
+        rst 10H                     ;API Call
+        ret
+
+; Invert Screen and beep
+; Input: B = number of inverts and beeps (must be even number > 0)
+invertScreen:
+        push bc
+        call invertGBUF             ;invert the GBUF
+        call plotToLCD              ;update the GLCD
+        ld hl,0FFFFH                ;delay count
+        ld c,TIME_DELAY             ;delay routine
+        rst 10H                     ;API Call
+        ;play a beep
+        ld c,BEEP                   ;make a short beep on frog move
+        rst 10H                     ;API Call
+        pop bc
+        djnz invertScreen           ;repeat
+        ret
+
+; Byte to BCD
+; Input: A
+; Output: HL = BCD number of A
+; Thanks James Doran!
+byteToBCD:
+        ld h,0                      ;set up HL
+        ld l,a                      ;store A in L
+        xor a                       ;clear a
+btbcd1:
+        inc a
+        daa                         ;adjust for BCD
+        jr nc,btbcd2                ;skip H update if no carry
+        inc h
+        ccf                         ;clear carry flag
+btbcd2:
+        dec l
+        jr nz,btbcd1
+        ld l,a
+        ret
+
+; Initialise the LCD.  This ensures the LCD stays corrupt free
+initLCD:
+        ld b,38H                    ;8-Bit, 4 Lines
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld b,01H                    ;Clear Display
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld b,06H                    ;No Shift, Cursor move right
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ld b,0CH             ;Display On, Cursor Off
+        ld c,CMD_TO_LCD             ;command to lcd call
+        rst 10H                     ;API Call
+        ret
+
+; Fast LDIR routine
+fastldir:
+        ;copy BC bytes from HL to DE
+        push hl
+        push af
+        xor a
+        sub c
+        and 15
+        add a,a
+        add a,ldirloop & 255
+        ld l,a
+        adc a,msb(ldirloop)
+        sub l
+        ld h,a
+        pop af
+        ex (sp),hl
+        ret
+
+ldirloop:
+        ;n=16, (number of LDI instructions, use qty of 4,8,16,32,64)
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+        ldi
+ldirloop_end:
+        ldi
+        jp pe,ldirloop
+        ret
+
+lcdIntroMessage:
+        ;Message is a bit mixed up as I exploit the LCD continuous DDRAM buffer
+        .db 3,4,"  TEC FROGGER!  ",1,2
+        .db "<+/-> Input Select  "
+        .db "<GO> Start <AD> Help"
+        .db " HEX PAD MATRIX JOY ",0
+lcdHelpMessage:
+        .db 3,4,"  TEC FROGGER!  ",1,2
+        .db "<Arrows> for Joy/Mat"
+        .db "Movement: <9,1,4,6> "
+        .db "<GO/ENTR/FIRE> cont.",0
+lcdInputArrows:
+        .db 0D4H,0DCH,0DCH,0E3H,0E3H,0E7H
+lcdLives:
+        .db 3,4,"  TEC FROGGER!  ",1,2
+        .db "LIVES:",0
+lcdScore:
+        .db "SCORE:      HS:",0
+lcdFrog:
+        .db 1,2," ",0   ;Front,Back,Space
+lcdGameOver:
+        .db 5," Game Over ",5,0
+lcdVictory:
+        .db 6,6," You Win ",6,6,0
+; Library files
+;---------------
+.include "glcd.z80"
+.include "frogger_data.z80"
+

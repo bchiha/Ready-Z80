@@ -1,0 +1,415 @@
+; glcd routines for frogger
+; -------------------------
+
+; Constants
+OFFSET_X:   .equ 2400H   ;X bit offset
+GBUF:       .equ 2400H   ;Graphics Buffer 16 * 64 = 1024 byte
+V_DELAY_US: .equ 0004H   ;Delay for 76us on your system
+
+; Initialise the LCD
+initGLCD:
+        ld hl,INIT_BASIC        ;point hl to lcd initialize table
+        ld b,04H                ;b=4 bytes
+next_cmd:
+        ld a,(hl)
+        out (GLCD_INST),a
+        call delayUS
+        inc hl
+        djnz next_cmd
+        ld de,0140H             ;1.6 ms
+        call delayMS
+        call clearGrLCD
+        
+; clears the graphics memory buffer
+clearGBUF:
+        ld hl,GBUF 
+        ld de,GBUF 
+        inc de
+        xor a
+        ld (hl),a
+        ld bc,03ffH
+        ldir
+        ret
+        
+; clears the graphics lcd buffer
+clearGrLCD:
+        call setGrMode
+        ld c,00H
+clr_x:
+        ld a,80H
+        or c
+        out (GLCD_INST),a
+        call delayUS
+        ld a, 80H
+        out (GLCD_INST),a
+        call delayUS
+        xor a                   ;clear byte
+        ld b,10H
+clr_y:
+        out (GLCD_DATA),a
+        call delayUS
+        out (GLCD_DATA),a
+        call delayUS
+        djnz clr_y
+        inc c
+        ld a,c
+        cp 20H
+        jr nz,clr_x        
+        ret
+
+; display a byte of a tile sprite to a row on the gbuf at a specified x offset
+;  input:  A = x offset
+;          HL => byte to display
+;          DE => start of row on gbuf
+putSpriteOR:
+        ex de,hl                           ; HL => start of row on gbuf, DE => byte to display
+        ld b,0
+        ld c,a                             ; BC = x offset
+        and 07H                            ; A = number of bits to shift / rotate right
+        ld (OFFSET_X),a                    ; store it later in the code
+        srl c
+        srl c
+        srl c                              ; BC = block x offset
+        add hl,bc                          ; HL => first byte to write to
+        ld a,(de)                          ; A = byte to display
+        ld d,a                             ; D = byte to display
+        ld e,b                             ; E = 0 (B is 0 from earlier)
+        ld a,(OFFSET_X)                    ; A = number of bits to shift / rotate right
+        or a                               ; any bits to shift / rotate?
+        jr z,psbSkip                       ; if not, skip the shift / rotate
+psbLoop:
+        srl d                              ; shift first byte right
+        rr e                               ; rotate second byte right, which will add the carry flag to the MSB if it was set
+        dec a                              ; dec counter
+        jr nz,psbLoop                      ; loop again if req'd
+psbSkip:
+        ld a,(hl)                          ; get byte from gbuf
+        or d                               ; add our first byte over it with OR
+        ld (hl),a                          ; save it
+        inc hl                             ; HL => next byte
+        ld a,(hl)                          ; repeat with second byte
+        or e
+        ld (hl),a
+        ret
+
+; display a byte of a tile sprite to a row on the gbuf at a specified x offset
+;  input:  A = x offset
+;          HL => byte to display
+;          DE => start of row on gbuf
+putSpriteAND:
+        ex de,hl                           ; HL => start of row on gbuf, DE => byte to display
+        ld b,0
+        ld c,a                             ; BC = x offset
+        and 07H                            ; A = number of bits to shift / rotate right
+        ld (OFFSET_X),a                    ; store it later in the code
+        srl c
+        srl c
+        srl c                              ; BC = block x offset
+        add hl,bc                          ; HL => first byte to write to
+        ld a,(de)                          ; A = byte to display
+        ld d,a                             ; D = byte to display
+        ld e,0FFH                          ; E = 0 (B is 0 from earlier)
+        ld a,(OFFSET_X)                    ; A = number of bits to shift / rotate right
+        or a                               ; any bits to shift / rotate?
+        jr z,psbSkip1                      ; if not, skip the shift / rotate
+psbLoop1:
+        srl d                              ; shift first byte right
+        set 7,d
+        rr e                               ; rotate second byte right, which will add the carry flag to the MSB if it was set
+        dec a                              ; dec counter
+        jr nz,psbLoop1                     ; loop again if req'd
+psbSkip1:
+        ld a,(hl)                          ; get byte from gbuf
+        and d                              ; add our first byte over it with AND
+        ld (hl),a                          ; save it
+        inc hl                             ; HL => next byte
+        ld a,(hl)                          ; repeat with second byte
+        and e
+        ld (hl),a
+        ret
+
+;Find the byte the pixel is located at
+;Input: BC = (x,y)
+;Output: HL = Address of byte, A = pixel bit
+;Destroy: E
+findPixel:
+        ld hl,FP_BITS          ;bitmask bits table
+        ld a,b                 ;a = x
+        and 07H                ;get remainder bits
+        or l                   ;index with fp_bits table
+        ld l,a
+        ld e,(hl)              ;e = bitmask
+        ld h,8                 ;ends up at 20H
+        ld a,c                 ;a = y
+        add a,a                ;a * 2
+        add a,a                ;a * 4 (no carry)
+        ld l,a
+        ld a,b                 ;a = x
+        rra                    ;divide x by 8
+        add hl,hl              ;hl * 8 and doesn't carry 
+        rra
+        add hl,hl              ;hl * 16 (row is now set up)
+        rra
+        or l
+        ld l,a                 ;index column
+        ld a,e                 ;bitmask
+        ret
+
+        .org (($+8) & 0FFF8H)   ;Align table mod 8     
+FP_BITS:
+        .db 80H,40H,20H,10H,08H,04H,02H,01H        
+
+;Main draw routine.  Moves GBUF to LCD and clears buffer
+;Destroys all
+plotToLCD:
+        ld hl,GBUF
+        ld c,80H
+plot_row:
+        ld a,c
+        and 9fh
+        out (GLCD_INST),a      ;vertical
+        call delayUS        
+        ld a,80H
+        bit 5,c
+        jr z,$+4
+        or 08H
+        out (GLCD_INST),a      ;horizontal
+        call delayUS        
+        ld b,10H               ;send eight double bytes (16 bytes)
+plot_column:
+        ld a,(hl)
+        out (GLCD_DATA), a
+        call delayUS
+        ; ld (hl),00h            ;clear buffer if clrbuf is non zero
+        inc hl
+        djnz plot_column
+        inc c
+        bit 6,c                ;is row = 64?
+        jp z,plot_row
+        ret
+
+; Invert GBUF.
+invertGBUF:
+        push hl
+        push bc
+        ld hl,GBUF      ;get GBUF
+        ld bc,16 * 64   ;1024 bytes
+invertLoop:
+        ld a,(hl)       ;get byte
+        cpl             ;invert bits
+        ld (hl),a       ;save it back
+        cpi             ;inc HL, dec BC
+        jp pe,invertLoop  ;repeat until BC=0
+        pop bc
+        pop hl
+        ret
+
+; Set Graphics Mode
+setGrMode:
+        ld a,34H
+        out (GLCD_INST),a
+        call delayus
+        ld a,36H
+        out (GLCD_INST),a
+
+; Delay for LCD write
+; delayUS:
+; delayMS:
+;         push af             ;save af
+; lb1:
+;         in a,(GLCD_INST)    ;Read status bit on LCD
+;         rlca                ;put bit 7 (status) in carry
+;         jr c,lb1            ;loop if LCD is busy
+;         pop af              ;restore af
+;         ret
+
+delayUS:
+        ld de,V_DELAY_US        ;delay between, was 0010h
+delayMS:
+        dec de                  ;each byte
+        ld a,d                  ;as per
+        or e                    ;lcd manufacter's
+        jr nz,delayMS           ;instructions
+        ret
+
+INIT_BASIC:
+        .db      30H             ;8 Bit interface, basic instruction
+        .db      0CH             ;display on, cursor & blink off
+        .db      06H             ;cursor move to right ,no shift
+        .db      01H             ;clear RAM
+
+;Masked Sprite routine
+putsprite_masked:
+;Inputs:
+;   (B,C) = (x,y)
+;   IX points to the sprite data
+;       first byte is the data
+;       second byte is mask
+;       continues, alternating like this.
+;
+;Outputs:
+;   Mask is ORed to the buffer, then data is XORed on top of that.
+;
+;Destroys:
+;   AF, BC, DE, HL, IX
+;
+;Notes:
+;   To set a pixel...
+;     black: mask is 1, data is 0
+;     white: mask is 1, data is 1
+;     clear: mask is 0, data is 0 (keeps the data from the buffer)
+;     invert: mask is 0, data is 1 (inverts the data from the buffer)
+;
+;This routine is free to use :)
+;63 bytes (or 64 bytes if gbuf is not located at 0x**40
+
+  ld a,b
+  ld l,c
+  ld e,l
+  ld h,0
+  ld d,h
+  add hl,hl
+  add hl,hl
+  add hl,hl
+  add hl,hl
+  ld e,a
+  and 7
+  ld c,a
+  xor e  ;essentially gets E with the bottom 3 bits reset
+  rra
+  rra
+  rra
+  ld e,a
+  add hl,de
+  ld de,GBUF
+  add hl,de
+  ld b,8
+putsprite_masked_loop:
+  push bc
+  xor a
+  ld d,(ix)
+  ld e,a
+  or c
+  ld b,c
+  ld c,e
+  inc ix
+  ld a,(ix)
+  jr z,putsprite_masked_rotdone
+putsprite_masked_rot:
+  rra
+  rr c
+  srl d
+  rr e
+  djnz putsprite_masked_rot
+putsprite_masked_rotdone:
+  or (hl)
+  xor d
+  ld (hl),a
+  inc hl
+  ld a,(hl)
+  or c
+  xor e
+  ld (hl),a
+  ld c,15
+  add hl,bc
+  inc ix
+  pop bc
+  djnz putsprite_masked_loop
+  ret
+
+
+; Rotate eight rows to the left
+; Input HL = start of row
+rotateLeft:
+    ld b,8
+sl1:
+    ld a,(hl)
+    and 80h
+    rla
+    push af
+    ld de,15
+    add hl,de
+    pop af
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    ld de,16
+    add hl,de
+    djnz sl1
+    ret
+
+; Rotate eight rows to the left
+; Input HL = start of row
+rotateRight:
+    ld b,8
+sr1:
+    ld de,15
+    add hl,de
+    ld a,(hl)
+    rra
+    push af
+    ld de,-15
+    add hl,de
+    pop af
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    djnz sr1
+    ret

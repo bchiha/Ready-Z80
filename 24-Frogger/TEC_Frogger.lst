@@ -1,0 +1,1903 @@
+0000                             ; ************************************************************
+0000                             ;                   _________________________
+0000                             ;                   ___  __/__  ____/_  ____/
+0000                             ;                   __  /  __  __/  _  /
+0000                             ;                   _  /   _  /___  / /___
+0000                             ;                   /_/    /_____/  \____/
+0000                             ;  _________________________________________________________
+0000                             ;  ___  ____/__  __ \_  __ \_  ____/_  ____/__  ____/__  __ \
+0000                             ;  __  /_   __  /_/ /  / / /  / __ _  / __ __  __/  __  /_/ /
+0000                             ;  _  __/   _  _, _// /_/ // /_/ / / /_/ / _  /___  _  _, _/
+0000                             ;  /_/      /_/ |_| \____/ \____/  \____/  /_____/  /_/ |_|
+0000                             ; 
+0000                             ;                By Brian Chiha (Ready? Z80) 2024
+0000                             ; ************************************************************
+0000                             ; This is my version of the classic 80's 8-bit game FROGGER
+0000                             ; The game is simple, move the FROG from the bottom of the
+0000                             ; screen to safe zones at the top of the screen.  But the
+0000                             ; frog will need to cross a busy road and navigate a swamp
+0000                             ; to make it without being killed!
+0000                             ; 
+0000                             ; This game is written on Z80 Assembly for the TEC-1G Z80
+0000                             ; computer.  It requires the Graphical LCD add-on board which
+0000                             ; is the main interface of the game.  The Hex Keypad on the
+0000                             ; TEC-1G can be used to navigate the frog.  Also, the full
+0000                             ; matrix keyboard (add-on) or a Joystick!
+0000                             ; This program also uses Mon3 (Monitor v3 for the TEC) API
+0000                             ; calls, but the GLCD calls handled within this file as I
+0000                             ; needed them to be very fast.
+0000                             ; 
+0000                             ; Variables
+0000                             ; ---------
+0000                FROG_XY:   EQU   3000H   ;Frog XY postion (2 bytes)
+0000                FROG_Y:   EQU   FROG_XY   ;Frog Position Y
+0000                FROG_X:   EQU   FROG_XY+1   ;Frog Position X
+0000                DIRECTION:   EQU   3002H   ;Frog Direction (1 byte)
+0000                MOVE_DELAY:   EQU   3003H   ;Log/Car Movement delay timer (1 byte)
+0000                MOVES:    EQU   3004H   ;Frog Moves for scoring (1 byte)
+0000                INPUT:    EQU   3005H   ;Input Selection (1 byte)
+0000                TUNE_PLAYED:   EQU   3006H   ;Tune Played Flag (1 byte)
+0000                LAST_KEY:   EQU   3007H   ;Last key pressed (1 byte)
+0000                BG_CHECKSUM:   EQU   3008H   ;Checksum of Crossing map behind frog (1 byte)
+0000                LIVES:    EQU   3009H   ;Lives (1 byte)
+0000                SCORE:    EQU   300AH   ;Score (2 byte)
+0000                SCORE_BUF:   EQU   300CH   ;Score ASCII buffer (5 bytes)
+0000                FROGS_LEFT:   EQU   3011H   ;Remaining frogs to save (1 byte)
+0000                FROGS_SAVED:   EQU   3012H   ;Bit Sets for saved frogs (1 byte)
+0000                HSCORE:   EQU   3013H   ;High Score (2 byte)
+0000                HSCORE_BUF:   EQU   3015H   ;High Score ASCII buffer (5 bytes)
+0000                BG_MAP:   EQU   2000H   ;Crossing Map Data (1024 bytes)
+0000                             ; Constants
+0000                             ; ---------
+0000                GLCD_INST:   EQU   07H   ;Graphics LCD Port Instruction
+0000                GLCD_DATA:   EQU   87H   ;Graphics LCD Port Data
+0000                SFROG_X:   EQU   56   ;Start Frog X
+0000                SFROG_Y:   EQU   56   ;Start Frog Y
+0000                CR:       EQU   0DH   ;Carriage Return
+0000                             ; Key press
+0000                             ; ---------
+0000                KEY_PLUS:   EQU   10H   ;Plus Key
+0000                KEY_MINUS:   EQU   11H   ;Minus Key
+0000                KEY_GO:   EQU   12H   ;GO Key
+0000                KEY_AD:   EQU   13H   ;AD Key
+0000                KEY_FIRE2:   EQU   10H   ;Fire 2 Joystick
+0000                KEY_ENTER:   EQU   0AH   ;Enter Matrix Keyboard
+0000                             ; Mon3 API Calls
+0000                             ; --------------
+0000                BEEP:     EQU   03H   ;Beep the speaker
+0000                HL_TO_STR:   EQU   08H   ;Convert Register HL to ASCII
+0000                SCAN_7SEGS:   EQU   0AH   ;Scan the Seven Segment displays
+0000                STR_TO_LCD:   EQU   0DH   ;String to LCD
+0000                CHR_TO_LCD:   EQU   0EH   ;Character to LCD
+0000                CMD_TO_LCD:   EQU   0FH   ;Command to LCD
+0000                HEX_SCAN:   EQU   10H   ;Hex Pad Key Scan
+0000                MATRIX_SCAN:   EQU   12H   ;Matrix Keyboard Scan
+0000                JOY_SCAN:   EQU   13H   ;Joystick Scan
+0000                TIME_DELAY:   EQU   21H   ;Time Delay
+0000                PLAY_TUNE:   EQU   23H   ;Play a tune
+0000                             ; Start of code
+4000                          .ORG   4000H   ;Start at address 4000
+4000                PRESTART:      
+4000   AF                     XOR   a   ;Zero High Score
+4001   32 13 30               LD   (HSCORE),a   ;reset high score
+4004   32 14 30               LD   (HSCORE+1),a   
+4007   32 05 30               LD   (INPUT),a   
+400A                START:       
+400A   CD BE 43               CALL   initLCD   ;reboot the LCD
+400D                             ;Display spash screen on GLCD
+400D   CD FB 44               CALL   initGLCD   ;reset and clear LCD screen
+4010   21 36 47               LD   hl,SPLASH_SCREEN   ;load spash screen to HL
+4013   11 00 24               LD   de,GBUF   
+4016   01 00 04               LD   bc,16*64   
+4019   CD D3 43               CALL   fastldir   ;and copy it to the graphics buffer GBUF
+401C   CD C0 45               CALL   plotToLCD   ;draw GBUF to the GLCD
+401F                             ;Default input to HEX PAD, LAST KEY and PLAY TUNE to false
+401F   AF                     XOR   a   ;HEX PAD input default
+4020   32 06 30               LD   (TUNE_PLAYED),a   
+4023   32 07 30               LD   (LAST_KEY),a   ;clear last key press
+4026   32 0A 30               LD   (SCORE),a   ;reset score
+4029   32 0B 30               LD   (SCORE+1),a   
+402C   32 12 30               LD   (FROGS_SAVED),a   ;no saved frogs yet
+402F   3E 03                  LD   a,3   ;lives left
+4031   32 09 30               LD   (LIVES),a   
+4034   3E 05                  LD   a,5   ;frogs to save
+4036   32 11 30               LD   (FROGS_LEFT),a   
+4039                             ;Create custom characters for LCD (Char 1-6)
+4039   06 48                  LD   b,48H   ;CGRAM entry (1)
+403B   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+403D   D7                     RST   10H   ;API Call
+403E   06 30                  LD   b,48   ;five characters 6*8
+4040   0E 0E                  LD   c,CHR_TO_LCD   ;character to LCD
+4042   21 91 4F               LD   hl,FROG_LCD   ;frog lcd table
+4045                LCDCHARLOOP:      
+4045   7E                     LD   a,(hl)   ;get data byte
+4046   23                     INC   hl   ;move to next byte
+4047   D7                     RST   10H   ;API Call
+4048   10 FB                  DJNZ   lcdCharLoop   ;repeat for all bytes
+404A                             ;Display menu on LCD
+404A                LCDMENU:      
+404A   06 01                  LD   b,01H   ;clear LCD instruction
+404C   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+404E   D7                     RST   10H   ;API Call
+404F   21 08 44               LD   hl,lcdIntroMessage   ;load message text
+4052   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+4054   D7                     RST   10H   ;API Call
+4055                             ;Set Input Arrows to current INPUT method
+4055   3A 05 30               LD   a,(INPUT)   ;Get input selection
+4058   07                     RLCA      ;Ax2
+4059   11 AA 44               LD   de,lcdInputArrows   ;map to column table
+405C   83                     ADD   a,e   ;index table with A
+405D   5F                     LD   e,a   
+405E   1A                     LD   a,(de)   ;get right arrow column
+405F   47                     LD   b,a   
+4060   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+4062   D7                     RST   10H   ;API Call
+4063   3E 5B                  LD   a,"["   ;7EH                    ;right arrow
+4065   0E 0E                  LD   c,CHR_TO_LCD   ;character to lcd call
+4067   D7                     RST   10H   ;API Call
+4068   13                     INC   de   
+4069   1A                     LD   a,(de)   ;get left arrow column
+406A   47                     LD   b,a   
+406B   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+406D   D7                     RST   10H   ;API Call
+406E   3E 5D                  LD   a,"]"   ;7FH                    ;left arrow
+4070   0E 0E                  LD   c,CHR_TO_LCD   ;character to lcd call
+4072   D7                     RST   10H   ;API Call
+4073                             ;Wait for key press
+4073                MENUKEYLOOP:      
+4073   CF                     RST   08H   ;Key wait until pressed
+4074   FE 12                  CP   KEY_GO   ;Is GO Pressed?
+4076   28 2E                  JR   z,startGame   ;Yes, run game
+4078   FE 13                  CP   KEY_AD   ;Is AD Pressed?
+407A   28 1C                  JR   z,help   ;Yes, display help
+407C   06 01                  LD   b,1   
+407E   FE 10                  CP   KEY_PLUS   ;Is PLUS Pressed?
+4080   28 06                  JR   z,moveCursor   ;Yes Move Cursor
+4082   06 FF                  LD   b,-1   
+4084   FE 11                  CP   KEY_MINUS   ;Is MINUS Pressed?
+4086   20 EB                  JR   nz,MenuKeyLoop   ;No, loop menu
+4088                MOVECURSOR:      
+4088   3A 05 30               LD   a,(INPUT)   ;Get Input Method
+408B   80                     ADD   a,b   ;move it by one
+408C   E6 03                  AND   03H   ;mask out crap
+408E   FE 03                  CP   03H   ;is it 3?
+4090   20 01                  JR   nz,$+3   ;no, use as is
+4092   AF                     XOR   a   ;make zero
+4093   32 05 30               LD   (INPUT),a   ;save new input method
+4096   18 B2                  JR   lcdMenu   ;redraw menu
+4098                             ;Display help
+4098                HELP:        
+4098   06 01                  LD   b,01H   ;clear LCD instruction
+409A   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+409C   D7                     RST   10H   ;API Call
+409D   21 59 44               LD   hl,lcdHelpMessage   ;load message text
+40A0   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+40A2   D7                     RST   10H   ;API Call
+40A3                             ;Get key press
+40A3   CF                     RST   08H   ;Wait for key
+40A4   18 A4                  JR   lcdMenu   
+40A6                             ;Play the game!
+40A6                STARTGAME:      
+40A6                             ;Update Game LCD
+40A6   CD 2A 43               CALL   updateLCD   
+40A9                             ;Clear GLCD
+40A9   CD FB 44               CALL   initGLCD   ;clear the GLCD
+40AC                             ;Starting conditions
+40AC   06 38                  LD   b,SFROG_X   ;initial frog x pos
+40AE   0E 38                  LD   c,SFROG_Y   ;initial frog y pos
+40B0   ED 43 00 30            LD   (FROG_XY),bc   ;save frog position
+40B4   AF                     XOR   a   ;clear A
+40B5   32 02 30               LD   (DIRECTION),a   ;inital up direction
+40B8   32 03 30               LD   (MOVE_DELAY),a   ;move delay 0
+40BB   32 04 30               LD   (MOVES),a   ;number of moves per frog
+40BE                             ;Copy crossing map to RAM
+40BE   21 36 4B               LD   hl,CROSSING_MAP   ;load crossing map to HL
+40C1   11 00 20               LD   de,BG_MAP   
+40C4   01 00 04               LD   bc,16*64   
+40C7   CD D3 43               CALL   fastldir   ;and copy it to the graphics buffer GBUF
+40CA                             ;Add saved frogs to BG_MAP
+40CA   3A 12 30               LD   a,(FROGS_SAVED)   ;get frogs saved bits
+40CD   57                     LD   d,a   ;save mask in D
+40CE   1E 05                  LD   e,5   ;five zones
+40D0   3E FE                  LD   a,0FEH   ;1-3
+40D2                SAVEDLOOP:      
+40D2   C6 03                  ADD   a,3   ;add 3 bytes
+40D4   CB 3A                  SRL   d   ;shift right
+40D6   DC 10 43               CALL   c,drawSaved   ;draw a saved frog
+40D9   1D                     DEC   e   
+40DA   20 F6                  JR   nz,savedLoop   
+40DC                             ;Main Game Draw Loop
+40DC                DRAWLOOP:      
+40DC                             ;draw the crossing map and the frog in the current position
+40DC   CD E6 42               CALL   drawMapAndFrog   
+40DF                             ;play intro music on first run
+40DF   3A 06 30               LD   a,(TUNE_PLAYED)   ;check if first run of game
+40E2   B7                     OR   a   ;is it false?
+40E3   20 0A                  JR   nz,skipTune   ;no, then skip tune
+40E5   3C                     INC   a   
+40E6   32 06 30               LD   (TUNE_PLAYED),a   ;make play tune true
+40E9   11 36 4F               LD   de,TUNE_DATA   ;Music data
+40EC   CD 97 43               CALL   playTune   ;play the start tune
+40EF                SKIPTUNE:      
+40EF                             ;scan the input for movement, and move the frog if valid
+40EF   CD 1E 42               CALL   getKeyPress   ;check for key press
+40F2                             ;calculate checksum under frog (prior to displaying it)
+40F2   CD C4 42               CALL   getBGChecksum   ;get the checksum of bytes under frog
+40F5   7A                     LD   a,d   
+40F6   32 08 30               LD   (BG_CHECKSUM),a   ;store checksum in ram
+40F9                             ;move the cars and logs, which includes the frog if on a log!
+40F9   21 80 20               LD   hl,BG_MAP+128   ;top logs
+40FC   CD 9D 46               CALL   rotateright   ;rotate 8x128 pixels right
+40FF   21 00 22               LD   hl,BG_MAP+512   ;racing car
+4102   CD 5B 46               CALL   rotateleft   ;rotate 8x128 pixels left
+4105                             ;move frog if on top log on pixel right
+4105   ED 4B 00 30            LD   bc,(FROG_XY)   ;get current frog postion
+4109   79                     LD   a,c   
+410A   FE 08                  CP   08h   ;is it on TOP log row?
+410C   20 0A                  JR   nz,skipMove   ;no don't move frog
+410E   78                     LD   a,b   
+410F   3C                     INC   a   
+4110   32 01 30               LD   (FROG_X),a   ;move frog 1 pixel to the right
+4113   FE 79                  CP   121   ;is frog off the screen (128-8+1)
+4115   D2 CE 41               JP   nc,death   ;frog moved off the screen, kill it
+4118                SKIPMOVE:      
+4118   21 03 30               LD   hl,MOVE_DELAY   ;get move delay
+411B   7E                     LD   a,(hl)   
+411C   B7                     OR   a   ;is it zero?
+411D   28 03                  JR   z,moveTheRest   ;yes, move the other logs/cars
+411F   35                     DEC   (hl)   ;decrease move delay count to 0
+4120   18 25                  JR   checkCollision   ;no more needed, check for collision
+4122                MOVETHEREST:      
+4122   36 01                  LD   (hl),1   ;set move count to 1 IE: skip one drawloop cycle
+4124   21 00 21               LD   hl,BG_MAP+256   ;bottom logs
+4127   CD 5B 46               CALL   rotateleft   ;rotate 8x128 pixels left
+412A   21 80 22               LD   hl,BG_MAP+640   ;nyan cat
+412D   CD 9D 46               CALL   rotateright   ;rotate 8x128 pixels right
+4130   21 00 23               LD   hl,BG_MAP+768   ;truck
+4133   CD 5B 46               CALL   rotateleft   ;rotate 8x128 pixels left
+4136                             ;move frog if on bottom log one pixel left
+4136   ED 4B 00 30            LD   bc,(FROG_XY)   ;get current cursor
+413A   79                     LD   a,c   
+413B   FE 10                  CP   10h   ;is it on BOTTOM log row?
+413D   20 08                  JR   nz,checkCollision   ;no, check for collision
+413F   78                     LD   a,b   
+4140   3D                     DEC   a   
+4141   FA CE 41               JP   m,death   ;frog moved off the screen, kill it
+4144   32 01 30               LD   (FROG_X),a   ;move from one pixel left
+4147                             ; Check for collision of frog and bad enemies
+4147                CHECKCOLLISION:      
+4147   3A 00 30               LD   a,(FROG_Y)   ;get verical position
+414A                             ;if on Home level, then check if in clear
+414A                CHECKHOME:      
+414A   FE 00                  CP   00H   ;is it on top home line?
+414C   20 59                  JR   nz,checkRoad   ;no, check road
+414E   3A 08 30               LD   a,(BG_CHECKSUM)   ;get the checksum of bytes under frog
+4151   B7                     OR   a   ;is it zero? (left and center)
+4152   28 04                  JR   z,safe   ;yes, its safe!
+4154   FE 08                  CP   08H   ;is it 08H, on right edge
+4156   20 76                  JR   nz,death   ;no, the jump to death
+4158                SAFE:        
+4158   CD E6 42               CALL   drawMapAndFrog   ;update its last position
+415B                             ;frog is safe, play a tune
+415B   11 80 4F               LD   de,SAFE_DATA   ;Music data
+415E   CD 97 43               CALL   playTune   ;play the tune
+4161                             ;save it on map
+4161                             ; 1: 07-09    safe X zones
+4161                             ; 2: 1F-21
+4161                             ; 3: 37-39
+4161                             ; 4: 4F-51
+4161                             ; 5: 67-69
+4161   3A 01 30               LD   a,(FROG_X)   ;get horizontal position.  Must be one of the above
+4164   3C                     INC   a   ;round up
+4165   E6 F8                  AND   0F8H   ;mask out low bit
+4167                             ; a is now 08,20,38,50,68
+4167   06 01                  LD   b,1   ;set bit 0
+4169                BITLOOP:      
+4169   FE 08                  CP   08H   ;is it on the first safe zone?
+416B   28 06                  JR   z,bitexit   ;yes exit
+416D   CB 20                  SLA   b   ;shift bit
+416F   D6 18                  SUB   24   ;24 pixels between safe zones
+4171   18 F6                  JR   bitloop   
+4173                BITEXIT:      
+4173                             ; B is now the bit to set to 1,2,4,8,10
+4173   3A 12 30               LD   a,(FROGS_SAVED)   
+4176   B0                     OR   b   ;add B mask
+4177   32 12 30               LD   (FROGS_SAVED),a   ;save it back
+417A                             ;update score
+417A   3A 04 30               LD   a,(MOVES)   ;get number of moves
+417D   2F                     CPL      ;adjust for real score, less moves, higher score
+417E   CD AF 43               CALL   byteToBCD   ;convert to 16 bit BCD
+4181   3A 0A 30               LD   a,(SCORE)   ;LSB of 16 bytes score
+4184   85                     ADD   a,l   ;add score to moves
+4185   27                     DAA      ;BCD adjust
+4186   32 0A 30               LD   (SCORE),a   ;save it back
+4189   3A 0B 30               LD   a,(SCORE+1)   ;MSB of score
+418C   8C                     ADC   a,h   ;update for overflow
+418D   27                     DAA      ;BCD adjust
+418E   32 0B 30               LD   (SCORE+1),a   ;save it back
+4191                             ;update high score
+4191   ED 5B 0A 30            LD   de,(SCORE)   ;get current score
+4195   2A 13 30               LD   hl,(HSCORE)   ;get cureent high score
+4198   B7                     OR   a   ;clear carry
+4199   ED 52                  SBC   hl,de   ;see if current score > high score
+419B   30 04                  JR   nc,skipHScore   ;no is the same or less
+419D   ED 53 13 30            LD   (HSCORE),de   ;save current score as high score
+41A1                SKIPHSCORE:      
+41A1                             ;check if all frogs are safe
+41A1   21 11 30               LD   hl,FROGS_LEFT   ;get frogs left count
+41A4   35                     DEC   (hl)   ;decrease it
+41A5                             ;go to end game choice
+41A5   18 42                  JR   endGameChoice   ;update LCD's and wait for key press based on Zero Flag
+41A7                             ;if on road and check sum isn't zero, a collision has occured
+41A7                CHECKROAD:      
+41A7   FE 20                  CP   20H   ;higher than road
+41A9   38 0D                  JR   c,checkWater   
+41AB   FE 38                  CP   38H   ;on land before road
+41AD   28 09                  JR   z,checkWater   
+41AF   3A 08 30               LD   a,(BG_CHECKSUM)   ;get the checksum of bytes under frog
+41B2   B7                     OR   a   ;is it zero?
+41B3   20 19                  JR   nz,death   ;no, it hit a vehicle
+41B5   C3 DC 40               JP   drawLoop   ;repeat draw loop
+41B8                CHECKWATER:      
+41B8                             ;if on water and check sum is 54H or AAH then frog is in water
+41B8   FE 08                  CP   08H   ;higher than water
+41BA   DA DC 40               JP   c,drawLoop   
+41BD   FE 11                  CP   11H   ;higher than path
+41BF   D2 DC 40               JP   nc,drawLoop   
+41C2   3A 08 30               LD   a,(BG_CHECKSUM)   ;get the checksum of bytes under frog
+41C5   FE 54                  CP   54H   
+41C7   28 05                  JR   z,death   
+41C9   FE AA                  CP   0AAH   
+41CB   C2 DC 40               JP   nz,drawLoop   ;repeat draw loop
+41CE                             ;fall through to death
+41CE                             ; Come here if the Frog dies :(
+41CE                DEATH:       
+41CE   CD E6 42               CALL   drawMapAndFrog   ;update its last position
+41D1                             ;draw dead frog
+41D1   ED 4B 00 30            LD   bc,(FROG_XY)   ;get current frog position
+41D5   DD 21 1E 47            LD   ix,FROG_SPLAT   ;map IX to FROG Splat Sprite
+41D9                             ;draw frog
+41D9   CD 17 46               CALL   putsprite_masked   
+41DC   CD C0 45               CALL   plotToLCD   ;update the GLCD
+41DF                             ;play sound
+41DF   11 77 4F               LD   de,DEATH_DATA   ;Music data
+41E2   CD 97 43               CALL   playTune   ;play the tune
+41E5                             ;reduce lives and check for 0 lives left
+41E5   21 09 30               LD   hl,LIVES   
+41E8   35                     DEC   (hl)   
+41E9                             ;based on Zero Flag, if true, then end game, otherwise continue to next round
+41E9                ENDGAMECHOICE:      
+41E9   21 A6 40               LD   hl,startGame   ;return address
+41EC   20 08                  JR   nz,deathUpdate   ;still more lives, wait for key press
+41EE                             ;no lives left.  Flip Screen
+41EE   06 04                  LD   b,4   ;four flips
+41F0   CD 9B 43               CALL   invertScreen   ;invert and beep screen
+41F3   21 0A 40               LD   hl,start   ;return address
+41F6                             ;wait for key press
+41F6                DEATHUPDATE:      
+41F6   E5                     PUSH   hl   ;push reutrn address on stack
+41F7                             ;update LCD
+41F7   CD 2A 43               CALL   updateLCD   ;refresh the LCD with lives lost / game over / or victory
+41FA                DEATHKEY:      
+41FA                             ;wait for either GO, Enter, or Fire 2 to continue
+41FA   3A 05 30               LD   a,(INPUT)   ;get input mode, 0=HEX,1=Matrix,2=Joy
+41FD   B7                     OR   a   ;is it HEX pad?
+41FE   28 0D                  JR   z,checkHEX1   
+4200   3D                     DEC   a   
+4201   28 10                  JR   z,checkMAT1   
+4203                             ;must be joy
+4203                CHECKJOY1:      
+4203   0E 13                  LD   c,JOY_SCAN   ;get joystick press
+4205   D7                     RST   10H   ;API Call
+4206   28 FB                  JR   z,checkJOY1   ;No key press, loop until
+4208   FE 10                  CP   KEY_FIRE2   ;is it FIRE 2?
+420A   20 F7                  JR   nz,checkJOY1   ;no, loop again
+420C   C9                     RET      ;return to startGame or start of program
+420D                CHECKHEX1:      
+420D   CF                     RST   08H   ;wait for key press
+420E   FE 12                  CP   KEY_GO   ;is it GO?
+4210   20 FB                  JR   nz,checkHEX1   ;loop if not GO
+4212   C9                     RET      ;return to startGame or start of program
+4213                CHECKMAT1:      
+4213   0E 12                  LD   c,MATRIX_SCAN   ;get matrix press
+4215   D7                     RST   10H   ;API Call
+4216   20 FB                  JR   nz,checkMAT1   ;No key press
+4218   7B                     LD   a,e   ;get key
+4219   FE 0A                  CP   KEY_ENTER   ;is it enter?
+421B   20 F6                  JR   nz,checkMAT1   ;no, loop again
+421D   C9                     RET      ;return to startGame or start of program
+421E                             ; Check for key press on desired input mode. If a valid movement is
+421E                             ; detected then move the frog
+421E                GETKEYPRESS:      
+421E                             ;get key but don't wait for key hit
+421E   06 04                  LD   b,4   ;four keys
+4220   3A 05 30               LD   a,(INPUT)   ;get input mode, 0=HEX,1=Matrix,2=Joy
+4223   B7                     OR   a   ;is it HEX pad?
+4224   28 17                  JR   z,checkHEX   
+4226   3D                     DEC   a   
+4227   28 1E                  JR   z,checkMAT   
+4229                             ;must be joy
+4229   0E 13                  LD   c,JOY_SCAN   ;get joystick press
+422B   D7                     RST   10H   ;API Call
+422C   28 0A                  JR   z,ResetKey   ;No key press
+422E   21 B8 42               LD   hl,map_joy   ;joystick key map
+4231                CHECKKEYLOOP:      
+4231   4E                     LD   c,(hl)   
+4232   23                     INC   hl   
+4233   B9                     CP   c   ;is it the key?
+4234   28 1E                  JR   z,keyGood   ;yes
+4236   10 F9                  DJNZ   CheckKeyLoop   
+4238                RESETKEY:      
+4238   AF                     XOR   a   ;a=0
+4239   32 07 30               LD   (LAST_KEY),a   ;save 0 to last key
+423C   C9                     RET      ;invalid key just exit
+423D                CHECKHEX:      
+423D   0E 10                  LD   c,HEX_SCAN   ;get hexpad press
+423F   D7                     RST   10H   ;API Call
+4240   20 F6                  JR   nz,ResetKey   ;No key press
+4242   21 BC 42               LD   hl,map_hex   ;hexpad key map
+4245   18 EA                  JR   CheckKeyLoop   ;check key
+4247                CHECKMAT:      
+4247   0E 12                  LD   c,MATRIX_SCAN   ;get matrix press
+4249   D7                     RST   10H   ;API Call
+424A   20 EC                  JR   nz,ResetKey   ;No key press
+424C   06 04                  LD   b,4   ;reload count as b gets clobbered
+424E   21 C0 42               LD   hl,map_mat   ;matrix key map
+4251   7B                     LD   a,e   ;matrix key to A
+4252   18 DD                  JR   CheckKeyLoop   ;check key
+4254                             ;key is good, now move the frog
+4254                KEYGOOD:      
+4254                             ;check for key repeat
+4254   3A 07 30               LD   a,(LAST_KEY)   ;get last key
+4257   B8                     CP   b   ;is it the same?
+4258   C8                     RET   z   ;yes, ignore the move
+4259                             ;play a beep
+4259   0E 03                  LD   c,BEEP   ;make a short beep on frog move
+425B   D7                     RST   10H   ;API Call
+425C   21 04 30               LD   hl,MOVES   ;get move count
+425F   34                     INC   (HL)   ;increase it
+4260   78                     LD   a,b   ;B is the key counter, 4=UP,3=DN,2=LF,1=RT
+4261   32 07 30               LD   (LAST_KEY),a   ;Save the new key
+4264   ED 4B 00 30            LD   bc,(FROG_XY)   ;Get Frog current X,Y position
+4268                K_UP:        
+4268   FE 04                  CP   04H   ;up
+426A   20 0E                  JR   nz,k_dn   
+426C   0C                     INC   c   
+426D   0D                     DEC   c   
+426E   C8                     RET   z   ;reached top
+426F   79                     LD   a,c   
+4270   D6 08                  SUB   8   ;move up one spot
+4272   32 00 30               LD   (FROG_Y),a   ;save new spot
+4275   AF                     XOR   a   ;up
+4276   32 02 30               LD   (DIRECTION),a   
+4279   C9                     RET      
+427A                K_DN:        
+427A   FE 03                  CP   03H   ;down
+427C   20 10                  JR   nz,k_lt   
+427E   79                     LD   a,c   
+427F   FE 38                  CP   56   
+4281   C8                     RET   z   ;reached bottom
+4282   79                     LD   a,c   
+4283   C6 08                  ADD   a,8   ;move down one spot
+4285   32 00 30               LD   (FROG_Y),a   ;save new spot
+4288   3E 01                  LD   a,1   ;down
+428A   32 02 30               LD   (DIRECTION),a   
+428D   C9                     RET      
+428E                K_LT:        
+428E   FE 02                  CP   02H   ;left
+4290   20 12                  JR   nz,k_rt   
+4292   78                     LD   a,b   
+4293   D6 08                  SUB   8   ;move left one spot
+4295   30 04                  JR   nc,move_lt   ;ok move
+4297   E1                     POP   hl   ;fake pop to remove return address
+4298   C3 CE 41               JP   death   ;kill it
+429B                MOVE_LT:      
+429B   32 01 30               LD   (FROG_X),a   ;save new spot
+429E   3E 02                  LD   a,2   ;left
+42A0   32 02 30               LD   (DIRECTION),a   
+42A3   C9                     RET      
+42A4                K_RT:        
+42A4   78                     LD   a,b   ;Can only be right
+42A5   C6 08                  ADD   a,8   ;move right one spot
+42A7   FE 79                  CP   121   ;too far to the right
+42A9   38 04                  JR   c,move_rt   ;ok move
+42AB   E1                     POP   hl   ;fake pop to remove return address
+42AC   C3 CE 41               JP   death   ;kill it
+42AF                MOVE_RT:      
+42AF   32 01 30               LD   (FROG_X),a   ;save new spot
+42B2   3E 03                  LD   a,3   ;right
+42B4   32 02 30               LD   (DIRECTION),a   
+42B7   C9                     RET      
+42B8                             ; Reference to input return for Up,Down,Left,Right based in input method
+42B8                MAP_JOY:      
+42B8   01 02 04 08            DB   01H,02H,04H,08H   
+42BC                MAP_HEX:      
+42BC   09 01 04 06            DB   09H,01H,04H,06H   
+42C0                MAP_MAT:      
+42C0   03 04 05 06            DB   03H,04H,05H,06H   
+42C4                             ; Get Background pixel count.
+42C4                             ; Get the total count of all bytes under frog as a checksum (one byte).
+42C4                             ; The results will be able to detect if a collision has occured.
+42C4                             ; return: D=checksum
+42C4                GETBGCHECKSUM:      
+42C4   ED 4B 00 30            LD   bc,(FROG_XY)   
+42C8   11 08 00               LD   de,0008H   ;D=checksum and E=byte loop
+42CB                BGROW:       
+42CB   D5                     PUSH   de   
+42CC   CD 9E 45               CALL   findPixel   ;HL = address of byte under frog, A = pixel bit
+42CF   56                     LD   d,(hl)   ;store it in HL
+42D0   23                     INC   hl   
+42D1   6E                     LD   l,(hl)   
+42D2   62                     LD   h,d   
+42D3   D1                     POP   de   
+42D4   17                     RLA      ;check if A is bit 7, no shifting needed
+42D5   38 07                  JR   c,BGloopexit   
+42D7                GETBGLOOP:      
+42D7   CB 25                  SLA   l   ;shift second byte left
+42D9   CB 14                  RL   h   ;rotate first byte left, which will add the carry flag to the LSB if it was set
+42DB   17                     RLA      ;dec counter
+42DC   30 F9                  JR   nc,getBGloop   ;loop again if req'd
+42DE                BGLOOPEXIT:      
+42DE                             ;h now contains full byte underneith frog
+42DE   7C                     LD   a,h   
+42DF   82                     ADD   a,d   ;add to checksum D
+42E0   57                     LD   d,a   
+42E1   0C                     INC   c   ;move down one row
+42E2   1D                     DEC   e   ;decrease loop count
+42E3   20 E6                  JR   nz,bgRow   ;do next byte until all eight bytes a added to D
+42E5   C9                     RET      
+42E6                             ;draw map and frog in it correct direction
+42E6                DRAWMAPANDFROG:      
+42E6                             ;draw crossing map
+42E6   21 00 20               LD   hl,BG_MAP   ;load crossing map to HL
+42E9   11 00 24               LD   de,GBUF   
+42EC   01 00 04               LD   bc,16*64   
+42EF   CD D3 43               CALL   fastldir   ;and copy it to the graphics buffer GBUF
+42F2                             ;draw frog
+42F2   ED 4B 00 30            LD   bc,(FROG_XY)   ;get current frog position
+42F6   3A 02 30               LD   a,(DIRECTION)   ;and its direction
+42F9   07                     RLCA      ;Index A by 16
+42FA   07                     RLCA      
+42FB   07                     RLCA      
+42FC   07                     RLCA      
+42FD   DD 21 DE 46            LD   ix,FROG_UP   ;map IX to first FROG Sprite
+4301   DD 85                  ADD   a,ixl   
+4303   DD 6F                  LD   ixl,a   
+4305   30 02                  JR   nc,$+4   
+4307   DD 24                  INC   ixh   ;index IX to the correct Sprite
+4309                             ;draw frog
+4309   CD 17 46               CALL   putsprite_masked   
+430C   CD C0 45               CALL   plotToLCD   ;update the GLCD
+430F   C9                     RET      
+4310                             ;draw a frog in the saved position
+4310                             ;Input: A = X pixel
+4310                DRAWSAVED:      
+4310   F5                     PUSH   af   ;save AF
+4311   D5                     PUSH   de   ;save DE
+4312   6F                     LD   l,a   ;X position
+4313   26 00                  LD   h,0   ;Y position
+4315   11 00 20               LD   de,BG_MAP   
+4318   19                     ADD   hl,de   ;Index BG_MAP to correct spot
+4319   11 2E 47               LD   de,FROG_HOME   ;Home Frog
+431C   06 08                  LD   b,8   ;eight bytes
+431E                DRAWCOPY:      
+431E   1A                     LD   a,(de)   ;get frog data
+431F   13                     INC   de   
+4320   77                     LD   (hl),a   ;update BG_MAP
+4321   3E 10                  LD   a,16   ;16 bytes
+4323   85                     ADD   a,l   
+4324   6F                     LD   l,a   ;index L for next row
+4325   10 F7                  DJNZ   drawcopy   
+4327   D1                     POP   de   ;restore DE
+4328   F1                     POP   af   ;restore AF
+4329   C9                     RET      
+432A                             ; Game Loop LCD screen.  Display the active game information on the LCG
+432A                UPDATELCD:      
+432A   06 01                  LD   b,01H   ;clear LCD instruction
+432C   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+432E   D7                     RST   10H   ;API Call
+432F                             ;Display lives and score
+432F   21 B0 44               LD   hl,lcdLives   ;load message text
+4332   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+4334   D7                     RST   10H   ;API Call
+4335   06 D4                  LD   b,0D4H   ;row 4, column 1
+4337   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+4339   D7                     RST   10H   ;API Call
+433A   21 CB 44               LD   hl,lcdScore   ;load message text
+433D   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+433F   D7                     RST   10H   ;API Call
+4340                             ;Display frogs
+4340   06 9B                  LD   b,9BH   ;row 3, column 8
+4342   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+4344   D7                     RST   10H   ;API Call
+4345   3A 11 30               LD   a,(FROGS_LEFT)   ;get remaining frogs to save
+4348   B7                     OR   a   ;is it zero?
+4349   28 11                  JR   z,printVictory   ;yes, display victory
+434B   3A 09 30               LD   a,(LIVES)   ;get lives count
+434E   B7                     OR   a   ;is it zero?
+434F   28 13                  JR   z,printGameOver   ;yes, display game over for lives
+4351   47                     LD   b,a   ;store in B
+4352                PRINTFROGLOOP:      
+4352   21 DB 44               LD   hl,lcdFrog   ;load frog
+4355   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+4357   D7                     RST   10H   ;API Call
+4358   10 F8                  DJNZ   printFrogLoop   ;print all lives
+435A   18 0E                  JR   displayScore   ;cont.
+435C                PRINTVICTORY:      
+435C   21 ED 44               LD   hl,lcdVictory   ;load message
+435F   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+4361   D7                     RST   10H   ;API Call
+4362   18 06                  JR   displayScore   ;cont.
+4364                PRINTGAMEOVER:      
+4364   21 DF 44               LD   hl,lcdGameOver   ;load message
+4367   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+4369   D7                     RST   10H   ;API Call
+436A                DISPLAYSCORE:      
+436A                             ;Display score
+436A   06 DB                  LD   b,0DBH   ;row 4, column 8
+436C   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+436E   D7                     RST   10H   ;API Call
+436F   2A 0A 30               LD   hl,(SCORE)   ;get score
+4372   0E 08                  LD   c,HL_TO_STR   ;convert to ASCII call
+4374   11 0C 30               LD   de,SCORE_BUF   ;score buffer
+4377   D7                     RST   10H   ;API Call
+4378   AF                     XOR   a   ;clear A
+4379   12                     LD   (de),a   ;save to end of string
+437A   21 0C 30               LD   hl,SCORE_BUF   ;load message text
+437D   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+437F   D7                     RST   10H   ;API Call
+4380                             ;Display high score
+4380   06 E4                  LD   b,0E4H   ;row 4, column 16
+4382   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+4384   D7                     RST   10H   ;API Call
+4385   2A 13 30               LD   hl,(HSCORE)   ;get high score
+4388   0E 08                  LD   c,HL_TO_STR   ;convert to ASCII call
+438A   11 15 30               LD   de,HSCORE_BUF   ;high score buffer
+438D   D7                     RST   10H   ;API Call
+438E   AF                     XOR   a   ;clear A
+438F   12                     LD   (de),a   ;save to end of string
+4390   21 15 30               LD   hl,HSCORE_BUF   ;load message text
+4393   0E 0D                  LD   c,STR_TO_LCD   ;string to lcd call
+4395   D7                     RST   10H   ;API Call
+4396   C9                     RET      
+4397                             ; Play the Frogger Intro Tune
+4397                PLAYTUNE:      
+4397   0E 23                  LD   c,PLAY_TUNE   ;Play Tune API call
+4399   D7                     RST   10H   ;API Call
+439A   C9                     RET      
+439B                             ; Invert Screen and beep
+439B                             ; Input: B = number of inverts and beeps (must be even number > 0)
+439B                INVERTSCREEN:      
+439B   C5                     PUSH   bc   
+439C   CD EC 45               CALL   invertGBUF   ;invert the GBUF
+439F   CD C0 45               CALL   plotToLCD   ;update the GLCD
+43A2   21 FF FF               LD   hl,0FFFFH   ;delay count
+43A5   0E 21                  LD   c,TIME_DELAY   ;delay routine
+43A7   D7                     RST   10H   ;API Call
+43A8                             ;play a beep
+43A8   0E 03                  LD   c,BEEP   ;make a short beep on frog move
+43AA   D7                     RST   10H   ;API Call
+43AB   C1                     POP   bc   
+43AC   10 ED                  DJNZ   invertScreen   ;repeat
+43AE   C9                     RET      
+43AF                             ; Byte to BCD
+43AF                             ; Input: A
+43AF                             ; Output: HL = BCD number of A
+43AF                             ; Thanks James Doran!
+43AF                BYTETOBCD:      
+43AF   26 00                  LD   h,0   ;set up HL
+43B1   6F                     LD   l,a   ;store A in L
+43B2   AF                     XOR   a   ;clear a
+43B3                BTBCD1:      
+43B3   3C                     INC   a   
+43B4   27                     DAA      ;adjust for BCD
+43B5   30 02                  JR   nc,btbcd2   ;skip H update if no carry
+43B7   24                     INC   h   
+43B8   3F                     CCF      ;clear carry flag
+43B9                BTBCD2:      
+43B9   2D                     DEC   l   
+43BA   20 F7                  JR   nz,btbcd1   
+43BC   6F                     LD   l,a   
+43BD   C9                     RET      
+43BE                             ; Initialise the LCD.  This ensures the LCD stays corrupt free
+43BE                INITLCD:      
+43BE   06 38                  LD   b,38H   ;8-Bit, 4 Lines
+43C0   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+43C2   D7                     RST   10H   ;API Call
+43C3   06 01                  LD   b,01H   ;Clear Display
+43C5   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+43C7   D7                     RST   10H   ;API Call
+43C8   06 06                  LD   b,06H   ;No Shift, Cursor move right
+43CA   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+43CC   D7                     RST   10H   ;API Call
+43CD   06 0C                  LD   b,0CH   ;Display On, Cursor Off
+43CF   0E 0F                  LD   c,CMD_TO_LCD   ;command to lcd call
+43D1   D7                     RST   10H   ;API Call
+43D2   C9                     RET      
+43D3                             ; Fast LDIR routine
+43D3                FASTLDIR:      
+43D3                             ;copy BC bytes from HL to DE
+43D3   E5                     PUSH   hl   
+43D4   F5                     PUSH   af   
+43D5   AF                     XOR   a   
+43D6   91                     SUB   c   
+43D7   E6 0F                  AND   15   
+43D9   87                     ADD   a,a   
+43DA   C6 E4                  ADD   a,ldirloop & 255   
+43DC   6F                     LD   l,a   
+43DD   CE 43                  ADC   a,msb(ldirloop)   
+43DF   95                     SUB   l   
+43E0   67                     LD   h,a   
+43E1   F1                     POP   af   
+43E2   E3                     EX   (sp),hl   
+43E3   C9                     RET      
+43E4                LDIRLOOP:      
+43E4                             ;n=16, (number of LDI instructions, use qty of 4,8,16,32,64)
+43E4   ED A0                  LDI      
+43E6   ED A0                  LDI      
+43E8   ED A0                  LDI      
+43EA   ED A0                  LDI      
+43EC   ED A0                  LDI      
+43EE   ED A0                  LDI      
+43F0   ED A0                  LDI      
+43F2   ED A0                  LDI      
+43F4   ED A0                  LDI      
+43F6   ED A0                  LDI      
+43F8   ED A0                  LDI      
+43FA   ED A0                  LDI      
+43FC   ED A0                  LDI      
+43FE   ED A0                  LDI      
+4400   ED A0                  LDI      
+4402                LDIRLOOP_END:      
+4402   ED A0                  LDI      
+4404   EA E4 43               JP   pe,ldirloop   
+4407   C9                     RET      
+4408                LCDINTROMESSAGE:      
+4408                             ;Message is a bit mixed up as I exploit the LCD continuous DDRAM buffer
+4408   03 04 20 20 54 45 43 20 46 52 4F 47 47 45 52 21 20 20 01 02 DB   3,4,"  TEC FROGGER!  ",1,2   
+441C   3C 2B 2F 2D 3E 20 49 6E 70 75 74 20 53 65 6C 65 63 74 20 20 DB   "<+/-> Input Select  "   
+4430   3C 47 4F 3E 20 53 74 61 72 74 20 3C 41 44 3E 20 48 65 6C 70 DB   "<GO> Start <AD> Help"   
+4444   20 48 45 58 20 50 41 44 20 4D 41 54 52 49 58 20 4A 4F 59 20 00 DB   " HEX PAD MATRIX JOY ",0   
+4459                LCDHELPMESSAGE:      
+4459   03 04 20 20 54 45 43 20 46 52 4F 47 47 45 52 21 20 20 01 02 DB   3,4,"  TEC FROGGER!  ",1,2   
+446D   3C 41 72 72 6F 77 73 3E 20 66 6F 72 20 4A 6F 79 2F 4D 61 74 DB   "<Arrows> for Joy/Mat"   
+4481   4D 6F 76 65 6D 65 6E 74 3A 20 3C 39 2C 31 2C 34 2C 36 3E 20 DB   "Movement: <9,1,4,6> "   
+4495   3C 47 4F 2F 45 4E 54 52 2F 46 49 52 45 3E 20 63 6F 6E 74 2E 00 DB   "<GO/ENTR/FIRE> cont.",0   
+44AA                LCDINPUTARROWS:      
+44AA   D4 DC DC E3 E3 E7      DB   0D4H,0DCH,0DCH,0E3H,0E3H,0E7H   
+44B0                LCDLIVES:      
+44B0   03 04 20 20 54 45 43 20 46 52 4F 47 47 45 52 21 20 20 01 02 DB   3,4,"  TEC FROGGER!  ",1,2   
+44C4   4C 49 56 45 53 3A 00   DB   "LIVES:",0   
+44CB                LCDSCORE:      
+44CB   53 43 4F 52 45 3A 20 20 20 20 20 20 48 53 3A 00 DB   "SCORE:      HS:",0   
+44DB                LCDFROG:      
+44DB   01 02 20 00            DB   1,2," ",0   ;Front,Back,Space
+44DF                LCDGAMEOVER:      
+44DF   05 20 47 61 6D 65 20 4F 76 65 72 20 05 00 DB   5," Game Over ",5,0   
+44ED                LCDVICTORY:      
+44ED   06 06 20 59 6F 75 20 57 69 6E 20 06 06 00 DB   6,6," You Win ",6,6,0   
+44FB                             ; Library files
+44FB                             ;---------------
+44FB                             ; glcd routines for frogger
+44FB                             ; -------------------------
+44FB                             ; Constants
+44FB                OFFSET_X:   EQU   2400H   ;X bit offset
+44FB                GBUF:     EQU   2400H   ;Graphics Buffer 16 * 64 = 1024 byte
+44FB                V_DELAY_US:   EQU   0004H   ;Delay for 76us on your system
+44FB                             ; Initialise the LCD
+44FB                INITGLCD:      
+44FB   21 13 46               LD   hl,INIT_BASIC   ;point hl to lcd initialize table
+44FE   06 04                  LD   b,04H   ;b=4 bytes
+4500                NEXT_CMD:      
+4500   7E                     LD   a,(hl)   
+4501   D3 07                  OUT   (GLCD_INST),a   
+4503   CD 0A 46               CALL   delayUS   
+4506   23                     INC   hl   
+4507   10 F7                  DJNZ   next_cmd   
+4509   11 40 01               LD   de,0140H   ;1.6 ms
+450C   CD 0D 46               CALL   delayMS   
+450F   CD 21 45               CALL   clearGrLCD   
+4512                             ; clears the graphics memory buffer
+4512                CLEARGBUF:      
+4512   21 00 24               LD   hl,GBUF   
+4515   11 00 24               LD   de,GBUF   
+4518   13                     INC   de   
+4519   AF                     XOR   a   
+451A   77                     LD   (hl),a   
+451B   01 FF 03               LD   bc,03ffH   
+451E   ED B0                  LDIR      
+4520   C9                     RET      
+4521                             ; clears the graphics lcd buffer
+4521                CLEARGRLCD:      
+4521   CD FF 45               CALL   setGrMode   
+4524   0E 00                  LD   c,00H   
+4526                CLR_X:       
+4526   3E 80                  LD   a,80H   
+4528   B1                     OR   c   
+4529   D3 07                  OUT   (GLCD_INST),a   
+452B   CD 0A 46               CALL   delayUS   
+452E   3E 80                  LD   a,80H   
+4530   D3 07                  OUT   (GLCD_INST),a   
+4532   CD 0A 46               CALL   delayUS   
+4535   AF                     XOR   a   ;clear byte
+4536   06 10                  LD   b,10H   
+4538                CLR_Y:       
+4538   D3 87                  OUT   (GLCD_DATA),a   
+453A   CD 0A 46               CALL   delayUS   
+453D   D3 87                  OUT   (GLCD_DATA),a   
+453F   CD 0A 46               CALL   delayUS   
+4542   10 F4                  DJNZ   clr_y   
+4544   0C                     INC   c   
+4545   79                     LD   a,c   
+4546   FE 20                  CP   20H   
+4548   20 DC                  JR   nz,clr_x   
+454A   C9                     RET      
+454B                             ; display a byte of a tile sprite to a row on the gbuf at a specified x offset
+454B                             ;  input:  A = x offset
+454B                             ;          HL => byte to display
+454B                             ;          DE => start of row on gbuf
+454B                PUTSPRITEOR:      
+454B   EB                     EX   de,hl   ; HL => start of row on gbuf, DE => byte to display
+454C   06 00                  LD   b,0   
+454E   4F                     LD   c,a   ; BC = x offset
+454F   E6 07                  AND   07H   ; A = number of bits to shift / rotate right
+4551   32 00 24               LD   (OFFSET_X),a   ; store it later in the code
+4554   CB 39                  SRL   c   
+4556   CB 39                  SRL   c   
+4558   CB 39                  SRL   c   ; BC = block x offset
+455A   09                     ADD   hl,bc   ; HL => first byte to write to
+455B   1A                     LD   a,(de)   ; A = byte to display
+455C   57                     LD   d,a   ; D = byte to display
+455D   58                     LD   e,b   ; E = 0 (B is 0 from earlier)
+455E   3A 00 24               LD   a,(OFFSET_X)   ; A = number of bits to shift / rotate right
+4561   B7                     OR   a   ; any bits to shift / rotate?
+4562   28 07                  JR   z,psbSkip   ; if not, skip the shift / rotate
+4564                PSBLOOP:      
+4564   CB 3A                  SRL   d   ; shift first byte right
+4566   CB 1B                  RR   e   ; rotate second byte right, which will add the carry flag to the MSB if it was set
+4568   3D                     DEC   a   ; dec counter
+4569   20 F9                  JR   nz,psbLoop   ; loop again if req'd
+456B                PSBSKIP:      
+456B   7E                     LD   a,(hl)   ; get byte from gbuf
+456C   B2                     OR   d   ; add our first byte over it with OR
+456D   77                     LD   (hl),a   ; save it
+456E   23                     INC   hl   ; HL => next byte
+456F   7E                     LD   a,(hl)   ; repeat with second byte
+4570   B3                     OR   e   
+4571   77                     LD   (hl),a   
+4572   C9                     RET      
+4573                             ; display a byte of a tile sprite to a row on the gbuf at a specified x offset
+4573                             ;  input:  A = x offset
+4573                             ;          HL => byte to display
+4573                             ;          DE => start of row on gbuf
+4573                PUTSPRITEAND:      
+4573   EB                     EX   de,hl   ; HL => start of row on gbuf, DE => byte to display
+4574   06 00                  LD   b,0   
+4576   4F                     LD   c,a   ; BC = x offset
+4577   E6 07                  AND   07H   ; A = number of bits to shift / rotate right
+4579   32 00 24               LD   (OFFSET_X),a   ; store it later in the code
+457C   CB 39                  SRL   c   
+457E   CB 39                  SRL   c   
+4580   CB 39                  SRL   c   ; BC = block x offset
+4582   09                     ADD   hl,bc   ; HL => first byte to write to
+4583   1A                     LD   a,(de)   ; A = byte to display
+4584   57                     LD   d,a   ; D = byte to display
+4585   1E FF                  LD   e,0FFH   ; E = 0 (B is 0 from earlier)
+4587   3A 00 24               LD   a,(OFFSET_X)   ; A = number of bits to shift / rotate right
+458A   B7                     OR   a   ; any bits to shift / rotate?
+458B   28 09                  JR   z,psbSkip1   ; if not, skip the shift / rotate
+458D                PSBLOOP1:      
+458D   CB 3A                  SRL   d   ; shift first byte right
+458F   CB FA                  SET   7,d   
+4591   CB 1B                  RR   e   ; rotate second byte right, which will add the carry flag to the MSB if it was set
+4593   3D                     DEC   a   ; dec counter
+4594   20 F7                  JR   nz,psbLoop1   ; loop again if req'd
+4596                PSBSKIP1:      
+4596   7E                     LD   a,(hl)   ; get byte from gbuf
+4597   A2                     AND   d   ; add our first byte over it with AND
+4598   77                     LD   (hl),a   ; save it
+4599   23                     INC   hl   ; HL => next byte
+459A   7E                     LD   a,(hl)   ; repeat with second byte
+459B   A3                     AND   e   
+459C   77                     LD   (hl),a   
+459D   C9                     RET      
+459E                             ;Find the byte the pixel is located at
+459E                             ;Input: BC = (x,y)
+459E                             ;Output: HL = Address of byte, A = pixel bit
+459E                             ;Destroy: E
+459E                FINDPIXEL:      
+459E   21 B8 45               LD   hl,FP_BITS   ;bitmask bits table
+45A1   78                     LD   a,b   ;a = x
+45A2   E6 07                  AND   07H   ;get remainder bits
+45A4   B5                     OR   l   ;index with fp_bits table
+45A5   6F                     LD   l,a   
+45A6   5E                     LD   e,(hl)   ;e = bitmask
+45A7   26 08                  LD   h,8   ;ends up at 20H
+45A9   79                     LD   a,c   ;a = y
+45AA   87                     ADD   a,a   ;a * 2
+45AB   87                     ADD   a,a   ;a * 4 (no carry)
+45AC   6F                     LD   l,a   
+45AD   78                     LD   a,b   ;a = x
+45AE   1F                     RRA      ;divide x by 8
+45AF   29                     ADD   hl,hl   ;hl * 8 and doesn't carry
+45B0   1F                     RRA      
+45B1   29                     ADD   hl,hl   ;hl * 16 (row is now set up)
+45B2   1F                     RRA      
+45B3   B5                     OR   l   
+45B4   6F                     LD   l,a   ;index column
+45B5   7B                     LD   a,e   ;bitmask
+45B6   C9                     RET      
+45B8                          .ORG   (($+8) & 0FFF8H)   ;Align table mod 8
+45B8                FP_BITS:      
+45B8   80 40 20 10 08 04 02 01 DB   80H,40H,20H,10H,08H,04H,02H,01H   
+45C0                             ;Main draw routine.  Moves GBUF to LCD and clears buffer
+45C0                             ;Destroys all
+45C0                PLOTTOLCD:      
+45C0   21 00 24               LD   hl,GBUF   
+45C3   0E 80                  LD   c,80H   
+45C5                PLOT_ROW:      
+45C5   79                     LD   a,c   
+45C6   E6 9F                  AND   9fh   
+45C8   D3 07                  OUT   (GLCD_INST),a   ;vertical
+45CA   CD 0A 46               CALL   delayUS   
+45CD   3E 80                  LD   a,80H   
+45CF   CB 69                  BIT   5,c   
+45D1   28 02                  JR   z,$+4   
+45D3   F6 08                  OR   08H   
+45D5   D3 07                  OUT   (GLCD_INST),a   ;horizontal
+45D7   CD 0A 46               CALL   delayUS   
+45DA   06 10                  LD   b,10H   ;send eight double bytes (16 bytes)
+45DC                PLOT_COLUMN:      
+45DC   7E                     LD   a,(hl)   
+45DD   D3 87                  OUT   (GLCD_DATA),a   
+45DF   CD 0A 46               CALL   delayUS   
+45E2                             ; ld (hl),00h            ;clear buffer if clrbuf is non zero
+45E2   23                     INC   hl   
+45E3   10 F7                  DJNZ   plot_column   
+45E5   0C                     INC   c   
+45E6   CB 71                  BIT   6,c   ;is row = 64?
+45E8   CA C5 45               JP   z,plot_row   
+45EB   C9                     RET      
+45EC                             ; Invert GBUF.
+45EC                INVERTGBUF:      
+45EC   E5                     PUSH   hl   
+45ED   C5                     PUSH   bc   
+45EE   21 00 24               LD   hl,GBUF   ;get GBUF
+45F1   01 00 04               LD   bc,16 * 64   ;1024 bytes
+45F4                INVERTLOOP:      
+45F4   7E                     LD   a,(hl)   ;get byte
+45F5   2F                     CPL      ;invert bits
+45F6   77                     LD   (hl),a   ;save it back
+45F7   ED A1                  CPI      ;inc HL, dec BC
+45F9   EA F4 45               JP   pe,invertLoop   ;repeat until BC=0
+45FC   C1                     POP   bc   
+45FD   E1                     POP   hl   
+45FE   C9                     RET      
+45FF                             ; Set Graphics Mode
+45FF                SETGRMODE:      
+45FF   3E 34                  LD   a,34H   
+4601   D3 07                  OUT   (GLCD_INST),a   
+4603   CD 0A 46               CALL   delayus   
+4606   3E 36                  LD   a,36H   
+4608   D3 07                  OUT   (GLCD_INST),a   
+460A                             ; Delay for LCD write
+460A                             ; delayUS:
+460A                             ; delayMS:
+460A                             ;         push af             ;save af
+460A                             ; lb1:
+460A                             ;         in a,(GLCD_INST)    ;Read status bit on LCD
+460A                             ;         rlca                ;put bit 7 (status) in carry
+460A                             ;         jr c,lb1            ;loop if LCD is busy
+460A                             ;         pop af              ;restore af
+460A                             ;         ret
+460A                DELAYUS:      
+460A   11 04 00               LD   de,V_DELAY_US   ;delay between, was 0010h
+460D                DELAYMS:      
+460D   1B                     DEC   de   ;each byte
+460E   7A                     LD   a,d   ;as per
+460F   B3                     OR   e   ;lcd manufacter's
+4610   20 FB                  JR   nz,delayMS   ;instructions
+4612   C9                     RET      
+4613                INIT_BASIC:      
+4613   30                     DB   30H   ;8 Bit interface, basic instruction
+4614   0C                     DB   0CH   ;display on, cursor & blink off
+4615   06                     DB   06H   ;cursor move to right ,no shift
+4616   01                     DB   01H   ;clear RAM
+4617                             ;Masked Sprite routine
+4617                PUTSPRITE_MASKED:      
+4617                             ;Inputs:
+4617                             ;   (B,C) = (x,y)
+4617                             ;   IX points to the sprite data
+4617                             ;       first byte is the data
+4617                             ;       second byte is mask
+4617                             ;       continues, alternating like this.
+4617                             ; 
+4617                             ;Outputs:
+4617                             ;   Mask is ORed to the buffer, then data is XORed on top of that.
+4617                             ; 
+4617                             ;Destroys:
+4617                             ;   AF, BC, DE, HL, IX
+4617                             ; 
+4617                             ;Notes:
+4617                             ;   To set a pixel...
+4617                             ;     black: mask is 1, data is 0
+4617                             ;     white: mask is 1, data is 1
+4617                             ;     clear: mask is 0, data is 0 (keeps the data from the buffer)
+4617                             ;     invert: mask is 0, data is 1 (inverts the data from the buffer)
+4617                             ; 
+4617                             ;This routine is free to use :)
+4617                             ;63 bytes (or 64 bytes if gbuf is not located at 0x**40
+4617   78                     LD   a,b   
+4618   69                     LD   l,c   
+4619   5D                     LD   e,l   
+461A   26 00                  LD   h,0   
+461C   54                     LD   d,h   
+461D   29                     ADD   hl,hl   
+461E   29                     ADD   hl,hl   
+461F   29                     ADD   hl,hl   
+4620   29                     ADD   hl,hl   
+4621   5F                     LD   e,a   
+4622   E6 07                  AND   7   
+4624   4F                     LD   c,a   
+4625   AB                     XOR   e   ;essentially gets E with the bottom 3 bits reset
+4626   1F                     RRA      
+4627   1F                     RRA      
+4628   1F                     RRA      
+4629   5F                     LD   e,a   
+462A   19                     ADD   hl,de   
+462B   11 00 24               LD   de,GBUF   
+462E   19                     ADD   hl,de   
+462F   06 08                  LD   b,8   
+4631                PUTSPRITE_MASKED_LOOP:      
+4631   C5                     PUSH   bc   
+4632   AF                     XOR   a   
+4633   DD 56 00               LD   d,(ix)   
+4636   5F                     LD   e,a   
+4637   B1                     OR   c   
+4638   41                     LD   b,c   
+4639   4B                     LD   c,e   
+463A   DD 23                  INC   ix   
+463C   DD 7E 00               LD   a,(ix)   
+463F   28 09                  JR   z,putsprite_masked_rotdone   
+4641                PUTSPRITE_MASKED_ROT:      
+4641   1F                     RRA      
+4642   CB 19                  RR   c   
+4644   CB 3A                  SRL   d   
+4646   CB 1B                  RR   e   
+4648   10 F7                  DJNZ   putsprite_masked_rot   
+464A                PUTSPRITE_MASKED_ROTDONE:      
+464A   B6                     OR   (hl)   
+464B   AA                     XOR   d   
+464C   77                     LD   (hl),a   
+464D   23                     INC   hl   
+464E   7E                     LD   a,(hl)   
+464F   B1                     OR   c   
+4650   AB                     XOR   e   
+4651   77                     LD   (hl),a   
+4652   0E 0F                  LD   c,15   
+4654   09                     ADD   hl,bc   
+4655   DD 23                  INC   ix   
+4657   C1                     POP   bc   
+4658   10 D7                  DJNZ   putsprite_masked_loop   
+465A   C9                     RET      
+465B                             ; Rotate eight rows to the left
+465B                             ; Input HL = start of row
+465B                ROTATELEFT:      
+465B   06 08                  LD   b,8   
+465D                SL1:         
+465D   7E                     LD   a,(hl)   
+465E   E6 80                  AND   80h   
+4660   17                     RLA      
+4661   F5                     PUSH   af   
+4662   11 0F 00               LD   de,15   
+4665   19                     ADD   hl,de   
+4666   F1                     POP   af   
+4667   CB 16                  RL   (hl)   
+4669   2B                     DEC   hl   
+466A   CB 16                  RL   (hl)   
+466C   2B                     DEC   hl   
+466D   CB 16                  RL   (hl)   
+466F   2B                     DEC   hl   
+4670   CB 16                  RL   (hl)   
+4672   2B                     DEC   hl   
+4673   CB 16                  RL   (hl)   
+4675   2B                     DEC   hl   
+4676   CB 16                  RL   (hl)   
+4678   2B                     DEC   hl   
+4679   CB 16                  RL   (hl)   
+467B   2B                     DEC   hl   
+467C   CB 16                  RL   (hl)   
+467E   2B                     DEC   hl   
+467F   CB 16                  RL   (hl)   
+4681   2B                     DEC   hl   
+4682   CB 16                  RL   (hl)   
+4684   2B                     DEC   hl   
+4685   CB 16                  RL   (hl)   
+4687   2B                     DEC   hl   
+4688   CB 16                  RL   (hl)   
+468A   2B                     DEC   hl   
+468B   CB 16                  RL   (hl)   
+468D   2B                     DEC   hl   
+468E   CB 16                  RL   (hl)   
+4690   2B                     DEC   hl   
+4691   CB 16                  RL   (hl)   
+4693   2B                     DEC   hl   
+4694   CB 16                  RL   (hl)   
+4696   11 10 00               LD   de,16   
+4699   19                     ADD   hl,de   
+469A   10 C1                  DJNZ   sl1   
+469C   C9                     RET      
+469D                             ; Rotate eight rows to the left
+469D                             ; Input HL = start of row
+469D                ROTATERIGHT:      
+469D   06 08                  LD   b,8   
+469F                SR1:         
+469F   11 0F 00               LD   de,15   
+46A2   19                     ADD   hl,de   
+46A3   7E                     LD   a,(hl)   
+46A4   1F                     RRA      
+46A5   F5                     PUSH   af   
+46A6   11 F1 FF               LD   de,-15   
+46A9   19                     ADD   hl,de   
+46AA   F1                     POP   af   
+46AB   CB 1E                  RR   (hl)   
+46AD   23                     INC   hl   
+46AE   CB 1E                  RR   (hl)   
+46B0   23                     INC   hl   
+46B1   CB 1E                  RR   (hl)   
+46B3   23                     INC   hl   
+46B4   CB 1E                  RR   (hl)   
+46B6   23                     INC   hl   
+46B7   CB 1E                  RR   (hl)   
+46B9   23                     INC   hl   
+46BA   CB 1E                  RR   (hl)   
+46BC   23                     INC   hl   
+46BD   CB 1E                  RR   (hl)   
+46BF   23                     INC   hl   
+46C0   CB 1E                  RR   (hl)   
+46C2   23                     INC   hl   
+46C3   CB 1E                  RR   (hl)   
+46C5   23                     INC   hl   
+46C6   CB 1E                  RR   (hl)   
+46C8   23                     INC   hl   
+46C9   CB 1E                  RR   (hl)   
+46CB   23                     INC   hl   
+46CC   CB 1E                  RR   (hl)   
+46CE   23                     INC   hl   
+46CF   CB 1E                  RR   (hl)   
+46D1   23                     INC   hl   
+46D2   CB 1E                  RR   (hl)   
+46D4   23                     INC   hl   
+46D5   CB 1E                  RR   (hl)   
+46D7   23                     INC   hl   
+46D8   CB 1E                  RR   (hl)   
+46DA   23                     INC   hl   
+46DB   10 C2                  DJNZ   sr1   
+46DD   C9                     RET      
+46DE                             ;Frogger Sprite Data with masks
+46DE                             ;------------------------------
+46DE                             ;   first byte is the data
+46DE                             ;   second byte is mask
+46DE                             ;   continues, alternating like this.
+46DE                             ;Notes:
+46DE                             ;   To set a pixel...
+46DE                             ;     black: mask is 1, data is 0
+46DE                             ;     white: mask is 1, data is 1
+46DE                             ;     clear: mask is 0, data is 0 (keeps the data from the buffer)
+46DE                             ;     invert: mask is 0, data is 1 (inverts the data from the buffer)
+46DE                FROG_UP:      
+46DE   00                     DB   00000000B   
+46DF   99                     DB   10011001B   
+46E0   00                     DB   00000000B   
+46E1   A5                     DB   10100101B   
+46E2   3C                     DB   00111100B   
+46E3   7E                     DB   01111110B   
+46E4   3C                     DB   00111100B   
+46E5   7E                     DB   01111110B   
+46E6   18                     DB   00011000B   
+46E7   3C                     DB   00111100B   
+46E8   00                     DB   00000000B   
+46E9   3C                     DB   00111100B   
+46EA   00                     DB   00000000B   
+46EB   42                     DB   01000010B   
+46EC   00                     DB   00000000B   
+46ED   42                     DB   01000010B   
+46EE                FROG_DN:      
+46EE   00                     DB   00000000B   
+46EF   42                     DB   01000010B   
+46F0   00                     DB   00000000B   
+46F1   42                     DB   01000010B   
+46F2   00                     DB   00000000B   
+46F3   3C                     DB   00111100B   
+46F4   18                     DB   00011000B   
+46F5   3C                     DB   00111100B   
+46F6   3C                     DB   00111100B   
+46F7   7E                     DB   01111110B   
+46F8   3C                     DB   00111100B   
+46F9   7E                     DB   01111110B   
+46FA   00                     DB   00000000B   
+46FB   A5                     DB   10100101B   
+46FC   00                     DB   00000000B   
+46FD   99                     DB   10011001B   
+46FE                FROG_LT:      
+46FE   00                     DB   00000000B   
+46FF   C0                     DB   11000000B   
+4700   00                     DB   00000000B   
+4701   33                     DB   00110011B   
+4702   30                     DB   00110000B   
+4703   7C                     DB   01111100B   
+4704   78                     DB   01111000B   
+4705   FC                     DB   11111100B   
+4706   78                     DB   01111000B   
+4707   FC                     DB   11111100B   
+4708   30                     DB   00110000B   
+4709   7C                     DB   01111100B   
+470A   00                     DB   00000000B   
+470B   33                     DB   00110011B   
+470C   00                     DB   00000000B   
+470D   C0                     DB   11000000B   
+470E                FROG_RT:      
+470E   00                     DB   00000000B   
+470F   03                     DB   00000011B   
+4710   00                     DB   00000000B   
+4711   CC                     DB   11001100B   
+4712   0C                     DB   00001100B   
+4713   3E                     DB   00111110B   
+4714   1E                     DB   00011110B   
+4715   3F                     DB   00111111B   
+4716   1E                     DB   00011110B   
+4717   3F                     DB   00111111B   
+4718   0C                     DB   00001100B   
+4719   3E                     DB   00111110B   
+471A   00                     DB   00000000B   
+471B   CC                     DB   11001100B   
+471C   00                     DB   00000000B   
+471D   03                     DB   00000011B   
+471E                FROG_SPLAT:      
+471E   3F                     DB   00111111B   
+471F   FF                     DB   11111111B   
+4720   9C                     DB   10011100B   
+4721   FF                     DB   11111111B   
+4722   80                     DB   10000000B   
+4723   FE                     DB   11111110B   
+4724   83                     DB   10000011B   
+4725   FF                     DB   11111111B   
+4726   C1                     DB   11000001B   
+4727   FF                     DB   11111111B   
+4728   C3                     DB   11000011B   
+4729   FF                     DB   11111111B   
+472A   A9                     DB   10101001B   
+472B   FF                     DB   11111111B   
+472C   EF                     DB   11101111B   
+472D   FF                     DB   11111111B   
+472E                FROG_HOME:      
+472E   99                     DB   10011001B   
+472F   A5                     DB   10100101B   
+4730   42                     DB   01000010B   
+4731   42                     DB   01000010B   
+4732   24                     DB   00100100B   
+4733   3C                     DB   00111100B   
+4734   42                     DB   01000010B   
+4735   42                     DB   01000010B   
+4736                             ; Splash Screen data 128x64 pixels
+4736                SPLASH_SCREEN:      
+4736   00 00 07 80 00 00 00 03 C0 00 00 00 00 00 00 00 DB   00H,00H,07H,080H,00H,00H,00H,03H,0C0H,00H,00H,00H,00H,00H,00H,00H   
+4746   00 00 04 80 00 00 00 02 40 00 00 00 00 00 00 00 DB   00H,00H,04H,080H,00H,00H,00H,02H,040H,00H,00H,00H,00H,00H,00H,00H   
+4756   00 00 04 FF FF FF FF E2 40 00 00 00 00 00 00 00 DB   00H,00H,04H,0FFH,0FFH,0FFH,0FFH,0E2H,040H,00H,00H,00H,00H,00H,00H,00H   
+4766   3E 00 0C AA AA AA AA A2 40 00 00 00 00 00 00 7C DB   03EH,00H,0CH,0AAH,0AAH,0AAH,0AAH,0A2H,040H,00H,00H,00H,00H,00H,00H,07CH   
+4776   16 00 34 D5 55 55 55 62 40 00 00 03 80 00 00 48 DB   016H,00H,034H,0D5H,055H,055H,055H,062H,040H,00H,00H,03H,080H,00H,00H,048H   
+4786   16 00 D4 AA AA AA AA A2 40 00 00 0C 78 00 00 08 DB   016H,00H,0D4H,0AAH,0AAH,0AAH,0AAH,0A2H,040H,00H,00H,0CH,078H,00H,00H,08H   
+4796   3E 01 24 D5 55 55 55 62 40 00 00 38 07 80 00 38 DB   03EH,01H,024H,0D5H,055H,055H,055H,062H,040H,00H,00H,038H,07H,080H,00H,038H   
+47A6   14 01 CC AA AA AA AA A2 40 00 00 61 C0 60 00 20 DB   014H,01H,0CCH,0AAH,0AAH,0AAH,0AAH,0A2H,040H,00H,00H,061H,0C0H,060H,00H,020H   
+47B6   14 01 14 D5 55 55 55 62 40 00 00 40 C0 10 00 24 DB   014H,01H,014H,0D5H,055H,055H,055H,062H,040H,00H,00H,040H,0C0H,010H,00H,024H   
+47C6   36 01 24 AA BF FF FF FF E0 00 00 C0 C0 08 00 7C DB   036H,01H,024H,0AAH,0BFH,0FFH,0FFH,0FFH,0E0H,00H,00H,0C0H,0C0H,08H,00H,07CH   
+47D6   00 01 CC D5 D0 00 00 00 10 00 00 C0 00 F0 00 00 DB   00H,01H,0CCH,0D5H,0D0H,00H,00H,00H,010H,00H,00H,0C0H,00H,0F0H,00H,00H   
+47E6   3E 01 14 AB 10 00 00 00 08 00 01 80 01 00 00 38 DB   03EH,01H,014H,0ABH,010H,00H,00H,00H,08H,00H,01H,080H,01H,00H,00H,038H   
+47F6   12 01 24 DC 10 FF FB FF 88 00 07 00 06 00 00 6C DB   012H,01H,024H,0DCH,010H,0FFH,0FBH,0FFH,088H,00H,07H,00H,06H,00H,00H,06CH   
+4806   10 01 CC A9 D1 FF FB FF C8 00 0E 00 08 00 00 6C DB   010H,01H,0CCH,0A9H,0D1H,0FFH,0FBH,0FFH,0C8H,00H,0EH,00H,08H,00H,00H,06CH   
+4816   38 01 14 DB D1 FF FB FF C8 00 18 00 13 E0 00 38 DB   038H,01H,014H,0DBH,0D1H,0FFH,0FBH,0FFH,0C8H,00H,018H,00H,013H,0E0H,00H,038H   
+4826   10 01 24 AB D1 FF FB FF C8 3F FC 00 2C 10 00 6C DB   010H,01H,024H,0ABH,0D1H,0FFH,0FBH,0FFH,0C8H,03FH,0FCH,00H,02CH,010H,00H,06CH   
+4836   12 01 CC DB D1 FF FB FF CF C0 07 00 40 10 00 6C DB   012H,01H,0CCH,0DBH,0D1H,0FFH,0FBH,0FFH,0CFH,0C0H,07H,00H,040H,010H,00H,06CH   
+4846   3E 01 18 6B D3 E0 00 00 38 00 00 80 40 30 00 38 DB   03EH,01H,018H,06BH,0D3H,0E0H,00H,00H,038H,00H,00H,080H,040H,030H,00H,038H   
+4856   00 01 29 5B FC 80 00 00 10 00 00 00 83 C0 00 00 DB   00H,01H,029H,05BH,0FCH,080H,00H,00H,010H,00H,00H,00H,083H,0C0H,00H,00H   
+4866   3E 01 C9 5B C0 81 FF FF F0 C7 80 01 04 00 00 38 DB   03EH,01H,0C9H,05BH,0C0H,081H,0FFH,0FFH,0F0H,0C7H,080H,01H,04H,00H,00H,038H   
+4876   14 01 19 5C 00 87 00 00 10 7C 80 00 08 00 00 6C DB   014H,01H,019H,05CH,00H,087H,00H,00H,010H,07CH,080H,00H,08H,00H,00H,06CH   
+4886   14 01 29 50 00 88 00 00 08 20 00 38 08 00 00 6C DB   014H,01H,029H,050H,00H,088H,00H,00H,08H,020H,00H,038H,08H,00H,00H,06CH   
+4896   3E 01 C9 52 50 8F FF FF F8 30 01 E0 08 00 00 6C DB   03EH,01H,0C9H,052H,050H,08FH,0FFH,0FFH,0F8H,030H,01H,0E0H,08H,00H,00H,06CH   
+48A6   22 01 19 53 D0 88 00 00 0E 10 03 00 08 00 00 6C DB   022H,01H,019H,053H,0D0H,088H,00H,00H,0EH,010H,03H,00H,08H,00H,00H,06CH   
+48B6   22 01 29 50 20 8F FF FF F9 08 04 00 18 00 00 6C DB   022H,01H,029H,050H,020H,08FH,0FFH,0FFH,0F9H,08H,04H,00H,018H,00H,00H,06CH   
+48C6   22 01 C9 50 20 88 00 00 09 04 08 00 10 00 00 38 DB   022H,01H,0C9H,050H,020H,088H,00H,00H,09H,04H,08H,00H,010H,00H,00H,038H   
+48D6   00 01 19 50 20 8F FF FF FC 86 0F 80 18 00 00 00 DB   00H,01H,019H,050H,020H,08FH,0FFH,0FFH,0FCH,086H,0FH,080H,018H,00H,00H,00H   
+48E6   3C 01 29 50 20 88 00 00 02 42 10 80 28 00 00 00 DB   03CH,01H,029H,050H,020H,088H,00H,00H,02H,042H,010H,080H,028H,00H,00H,00H   
+48F6   16 01 C9 50 40 8F FF FF FF 42 E0 40 26 00 00 00 DB   016H,01H,0C9H,050H,040H,08FH,0FFH,0FFH,0FFH,042H,0E0H,040H,026H,00H,00H,00H   
+4906   16 01 19 50 40 88 00 00 01 62 00 40 C1 00 00 00 DB   016H,01H,019H,050H,040H,088H,00H,00H,01H,062H,00H,040H,0C1H,00H,00H,00H   
+4916   16 01 29 50 40 8F FF FF FF BE 00 43 A1 80 00 00 DB   016H,01H,029H,050H,040H,08FH,0FFH,0FFH,0FFH,0BEH,00H,043H,0A1H,080H,00H,00H   
+4926   16 01 C8 70 40 88 00 00 01 84 00 7C 10 C0 00 00 DB   016H,01H,0C8H,070H,040H,088H,00H,00H,01H,084H,00H,07CH,010H,0C0H,00H,00H   
+4936   16 01 1F A1 FE 8F FF FF FF C6 01 80 08 20 00 00 DB   016H,01H,01FH,0A1H,0FEH,08FH,0FFH,0FFH,0FFH,0C6H,01H,080H,08H,020H,00H,00H   
+4946   3C 01 24 86 00 84 00 00 00 42 06 00 04 10 00 00 DB   03CH,01H,024H,086H,00H,084H,00H,00H,00H,042H,06H,00H,04H,010H,00H,00H   
+4956   00 01 C9 98 7E 82 00 00 00 86 08 00 03 08 00 00 DB   00H,01H,0C9H,098H,07EH,082H,00H,00H,00H,086H,08H,00H,03H,08H,00H,00H   
+4966   22 01 12 E0 7E 81 FF FF FF 84 10 00 01 8C 00 00 DB   022H,01H,012H,0E0H,07EH,081H,0FFH,0FFH,0FFH,084H,010H,00H,01H,08CH,00H,00H   
+4976   22 01 E4 80 7E 80 00 00 01 04 21 F0 00 84 00 00 DB   022H,01H,0E4H,080H,07EH,080H,00H,00H,01H,04H,021H,0F0H,00H,084H,00H,00H   
+4986   36 01 88 C0 00 80 00 00 02 0C 22 08 00 84 00 00 DB   036H,01H,088H,0C0H,00H,080H,00H,00H,02H,0CH,022H,08H,00H,084H,00H,00H   
+4996   1C 01 FF C3 FF FF FF FF FE 08 2C 08 00 88 00 00 DB   01CH,01H,0FFH,0C3H,0FFH,0FFH,0FFH,0FFH,0FEH,08H,02CH,08H,00H,088H,00H,00H   
+49A6   08 00 36 C7 FC 00 00 00 04 14 F0 70 0F 08 00 00 DB   08H,00H,036H,0C7H,0FCH,00H,00H,00H,04H,014H,0F0H,070H,0FH,08H,00H,00H   
+49B6   08 00 19 FF 8C 00 00 00 08 24 03 80 08 10 00 00 DB   08H,00H,019H,0FFH,08CH,00H,00H,00H,08H,024H,03H,080H,08H,010H,00H,00H   
+49C6   1C 00 1F C7 8C 00 00 00 08 62 04 00 08 60 00 00 DB   01CH,00H,01FH,0C7H,08CH,00H,00H,00H,08H,062H,04H,00H,08H,060H,00H,00H   
+49D6   00 00 0F 8F 04 00 00 00 10 A1 08 00 07 C0 00 00 DB   00H,00H,0FH,08FH,04H,00H,00H,00H,010H,0A1H,08H,00H,07H,0C0H,00H,00H   
+49E6   00 00 00 0F 04 00 00 00 21 20 F0 00 00 00 00 00 DB   00H,00H,00H,0FH,04H,00H,00H,00H,021H,020H,0F0H,00H,00H,00H,00H,00H   
+49F6   FF FF FF EF 0F FF FF FF C1 FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0EFH,0FH,0FFH,0FFH,0FFH,0C1H,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4A06   FF FF FF EF 9F BF FF FF 83 FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0EFH,09FH,0BFH,0FFH,0FFH,083H,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4A16   FF FF FF E7 FF BF FF FF 00 D7 FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0E7H,0FFH,0BFH,0FFH,0FFH,00H,0D7H,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4A26   FF FF FF F7 FF 3F FF FE 00 0F FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0F7H,0FFH,03FH,0FFH,0FEH,00H,0FH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4A36   FF FF FF F0 00 7F FF FF FF FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0F0H,00H,07FH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4A46   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4A56   FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4A66   FE 01 80 F0 1F 80 60 3E 03 F0 0F E0 FC 03 03 FF DB   0FEH,01H,080H,0F0H,01FH,080H,060H,03EH,03H,0F0H,0FH,0E0H,0FCH,03H,03H,0FFH   
+4A76   FC 00 00 40 0F 80 00 18 01 C0 07 00 18 00 01 FF DB   0FCH,00H,00H,040H,0FH,080H,00H,018H,01H,0C0H,07H,00H,018H,00H,01H,0FFH   
+4A86   FC 01 00 40 0F 80 40 18 00 C0 03 00 08 00 00 FF DB   0FCH,01H,00H,040H,0FH,080H,040H,018H,00H,0C0H,03H,00H,08H,00H,00H,0FFH   
+4A96   FF 8F 1F 87 CF 8F C7 90 F8 07 E2 1F 08 FE 38 FF DB   0FFH,08FH,01FH,087H,0CFH,08FH,0C7H,090H,0F8H,07H,0E2H,01FH,08H,0FEH,038H,0FFH   
+4AA6   FF 8F 1F 8F FF 8F C7 91 FC 0F E2 3F 88 FE 3C 7F DB   0FFH,08FH,01FH,08FH,0FFH,08FH,0C7H,091H,0FCH,0FH,0E2H,03FH,088H,0FEH,03CH,07FH   
+4AB6   FF 8F 01 8F FF 8F C7 11 FC 0F FC 3F F8 FE 38 FF DB   0FFH,08FH,01H,08FH,0FFH,08FH,0C7H,011H,0FCH,0FH,0FCH,03FH,0F8H,0FEH,038H,0FFH   
+4AC6   FF 8F 03 8F FF 80 C0 11 FC 0E 00 38 00 06 00 FF DB   0FFH,08FH,03H,08FH,0FFH,080H,0C0H,011H,0FCH,0EH,00H,038H,00H,06H,00H,0FFH   
+4AD6   FF 8F 1F 8F FF 80 C0 71 FC 0E 00 38 00 06 01 FF DB   0FFH,08FH,01FH,08FH,0FFH,080H,0C0H,071H,0FCH,0EH,00H,038H,00H,06H,01H,0FFH   
+4AE6   FF 8F 1F 8F CF 81 C4 31 F8 0F E0 3F 88 FE 01 FF DB   0FFH,08FH,01FH,08FH,0CFH,081H,0C4H,031H,0F8H,0FH,0E0H,03FH,088H,0FEH,01H,0FFH   
+4AF6   FF 8F 00 07 8F 8F C6 10 F0 83 C2 1F 08 FE 20 FF DB   0FFH,08FH,00H,07H,08FH,08FH,0C6H,010H,0F0H,083H,0C2H,01FH,08H,0FEH,020H,0FFH   
+4B06   FF 8F 00 40 0F 8F C7 08 00 C0 02 00 08 02 30 7F DB   0FFH,08FH,00H,040H,0FH,08FH,0C7H,08H,00H,0C0H,02H,00H,08H,02H,030H,07FH   
+4B16   FF 8F 00 C0 1F 8F C7 88 01 E0 07 00 18 00 38 7F DB   0FFH,08FH,00H,0C0H,01FH,08FH,0C7H,088H,01H,0E0H,07H,00H,018H,00H,038H,07FH   
+4B26   FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4B36                             ; Crossing map data 128x64 pixels
+4B36                CROSSING_MAP:      
+4B36   FF 00 FF FF 00 FF FF 00 FF FF 00 FF FF 00 FF FF DB   0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH   
+4B46   AB 00 AA AB 00 AA AB 00 AA AB 00 AA AB 00 AA AA DB   0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0AAH   
+4B56   55 00 D5 55 00 D5 55 00 D5 55 00 D5 55 00 D5 55 DB   055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H   
+4B66   AB 00 AA AB 00 AA AB 00 AA AB 00 AA AB 00 AA AA DB   0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0AAH   
+4B76   55 00 D5 55 00 D5 55 00 D5 55 00 D5 55 00 D5 55 DB   055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H   
+4B86   AB 00 AA AB 00 AA AB 00 AA AB 00 AA AB 00 AA AA DB   0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0ABH,00H,0AAH,0AAH   
+4B96   55 00 D5 55 00 D5 55 00 D5 55 00 D5 55 00 D5 55 DB   055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H,00H,0D5H,055H   
+4BA6   FF 00 FF FF 00 FF FF 00 FF FF 00 FF FF 00 FF FF DB   0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH,00H,0FFH,0FFH   
+4BB6   22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 DB   022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H   
+4BC6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4BD6   88 9F FF C8 87 FF FF FF C8 88 9F FF C8 88 88 88 DB   088H,09FH,0FFH,0C8H,087H,0FFH,0FFH,0FFH,0C8H,088H,09FH,0FFH,0C8H,088H,088H,088H   
+4BE6   00 20 00 A0 08 00 00 00 A0 00 20 00 A0 00 00 00 DB   00H,020H,00H,0A0H,08H,00H,00H,00H,0A0H,00H,020H,00H,0A0H,00H,00H,00H   
+4BF6   22 20 00 A2 28 00 00 00 A2 22 20 00 A2 22 22 22 DB   022H,020H,00H,0A2H,028H,00H,00H,00H,0A2H,022H,020H,00H,0A2H,022H,022H,022H   
+4C06   00 1F FF C0 07 FF FF FF C0 00 1F FF C0 00 00 00 DB   00H,01FH,0FFH,0C0H,07H,0FFH,0FFH,0FFH,0C0H,00H,01FH,0FFH,0C0H,00H,00H,00H   
+4C16   88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 DB   088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H   
+4C26   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4C36   22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 DB   022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H,022H   
+4C46   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4C56   87 FF FF FF C8 88 89 FF FC 88 88 7F FF FF FC 88 DB   087H,0FFH,0FFH,0FFH,0C8H,088H,089H,0FFH,0FCH,088H,088H,07FH,0FFH,0FFH,0FCH,088H   
+4C66   08 00 00 00 A0 00 02 00 0A 00 00 80 00 00 0A 00 DB   08H,00H,00H,00H,0A0H,00H,02H,00H,0AH,00H,00H,080H,00H,00H,0AH,00H   
+4C76   28 00 00 00 A2 22 22 00 0A 22 22 80 00 00 0A 22 DB   028H,00H,00H,00H,0A2H,022H,022H,00H,0AH,022H,022H,080H,00H,00H,0AH,022H   
+4C86   07 FF FF FF C0 00 01 FF FC 00 00 7F FF FF FC 00 DB   07H,0FFH,0FFH,0FFH,0C0H,00H,01H,0FFH,0FCH,00H,00H,07FH,0FFH,0FFH,0FCH,00H   
+4C96   88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 DB   088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H,088H   
+4CA6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4CB6   FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4CC6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4CD6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4CE6   3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C DB   03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH   
+4CF6   3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C DB   03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH   
+4D06   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4D16   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4D26   FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4D36   00 1C 07 00 00 00 38 0E 00 00 07 01 C0 00 00 00 DB   00H,01CH,07H,00H,00H,00H,038H,0EH,00H,00H,07H,01H,0C0H,00H,00H,00H   
+4D46   00 09 F2 00 00 00 13 E4 00 00 02 7C 80 00 00 00 DB   00H,09H,0F2H,00H,00H,00H,013H,0E4H,00H,00H,02H,07CH,080H,00H,00H,00H   
+4D56   00 1F 1E 00 00 00 3E 3C 00 00 07 C7 80 00 00 00 DB   00H,01FH,01EH,00H,00H,00H,03EH,03CH,00H,00H,07H,0C7H,080H,00H,00H,00H   
+4D66   00 18 0F 00 00 00 30 1E 00 00 06 03 C0 00 00 00 DB   00H,018H,0FH,00H,00H,00H,030H,01EH,00H,00H,06H,03H,0C0H,00H,00H,00H   
+4D76   00 1F 1E 00 00 00 3E 3C 00 00 07 C7 80 00 00 00 DB   00H,01FH,01EH,00H,00H,00H,03EH,03CH,00H,00H,07H,0C7H,080H,00H,00H,00H   
+4D86   00 09 F2 00 00 00 13 E4 00 00 02 7C 80 00 00 00 DB   00H,09H,0F2H,00H,00H,00H,013H,0E4H,00H,00H,02H,07CH,080H,00H,00H,00H   
+4D96   00 1C 07 00 00 00 38 0E 00 00 07 01 C0 00 00 00 DB   00H,01CH,07H,00H,00H,00H,038H,0EH,00H,00H,07H,01H,0C0H,00H,00H,00H   
+4DA6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4DB6   00 00 00 18 60 00 00 00 01 86 00 00 00 00 03 0C DB   00H,00H,00H,018H,060H,00H,00H,00H,01H,086H,00H,00H,00H,00H,03H,0CH   
+4DC6   00 00 9F E7 90 00 00 09 FE 79 00 00 00 13 FC F2 DB   00H,00H,09FH,0E7H,090H,00H,00H,09H,0FEH,079H,00H,00H,00H,013H,0FCH,0F2H   
+4DD6   00 00 60 40 08 00 00 06 04 00 80 00 00 0C 08 01 DB   00H,00H,060H,040H,08H,00H,00H,06H,04H,00H,080H,00H,00H,0CH,08H,01H   
+4DE6   00 00 20 44 28 00 00 02 04 42 80 00 00 04 08 85 DB   00H,00H,020H,044H,028H,00H,00H,02H,04H,042H,080H,00H,00H,04H,08H,085H   
+4DF6   00 00 10 4C 68 00 00 01 04 C6 80 00 00 02 09 8D DB   00H,00H,010H,04CH,068H,00H,00H,01H,04H,0C6H,080H,00H,00H,02H,09H,08DH   
+4E06   00 00 0F E0 10 00 00 00 FE 01 00 00 00 01 FC 02 DB   00H,00H,0FH,0E0H,010H,00H,00H,00H,0FEH,01H,00H,00H,00H,01H,0FCH,02H   
+4E16   00 00 02 9F E0 00 00 00 29 FE 00 00 00 00 53 FC DB   00H,00H,02H,09FH,0E0H,00H,00H,00H,029H,0FEH,00H,00H,00H,00H,053H,0FCH   
+4E26   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4E36   00 00 00 00 0E 7F FF 00 00 00 00 00 00 E7 FF F0 DB   00H,00H,00H,00H,0EH,07FH,0FFH,00H,00H,00H,00H,00H,00H,0E7H,0FFH,0F0H   
+4E46   00 00 00 00 1F 40 03 00 00 00 00 00 01 F4 00 30 DB   00H,00H,00H,00H,01FH,040H,03H,00H,00H,00H,00H,00H,01H,0F4H,00H,030H   
+4E56   00 00 00 00 11 C0 03 00 00 00 00 00 01 1C 00 30 DB   00H,00H,00H,00H,011H,0C0H,03H,00H,00H,00H,00H,00H,01H,01CH,00H,030H   
+4E66   00 00 00 00 11 C0 03 00 00 00 00 00 01 1C 00 30 DB   00H,00H,00H,00H,011H,0C0H,03H,00H,00H,00H,00H,00H,01H,01CH,00H,030H   
+4E76   00 00 00 00 11 C0 03 00 00 00 00 00 01 1C 00 30 DB   00H,00H,00H,00H,011H,0C0H,03H,00H,00H,00H,00H,00H,01H,01CH,00H,030H   
+4E86   00 00 00 00 1F 40 03 00 00 00 00 00 01 F4 00 30 DB   00H,00H,00H,00H,01FH,040H,03H,00H,00H,00H,00H,00H,01H,0F4H,00H,030H   
+4E96   00 00 00 00 0E 7F FF 00 00 00 00 00 00 E7 FF F0 DB   00H,00H,00H,00H,0EH,07FH,0FFH,00H,00H,00H,00H,00H,00H,0E7H,0FFH,0F0H   
+4EA6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4EB6   FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF DB   0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH   
+4EC6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4ED6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4EE6   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4EF6   3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C 3C DB   03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH,03CH   
+4F06   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4F16   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4F26   00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 DB   00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H,00H   
+4F36                             ; Music data for MON3 music routine
+4F36                TUNE_DATA:      
+4F36   0D 0D 0A 0A 05 05 0A 0A DB   0DH,0DH,0AH,0AH,05H,05H,0AH,0AH   ;GGEEbbEE
+4F3E   0D 0D 0A 0A 05 05 0A 0A DB   0DH,0DH,0AH,0AH,05H,05H,0AH,0AH   ;GGEEbbEE
+4F46   0F 0F 0F 0F 0D 0D 0D 0D DB   0FH,0FH,0FH,0FH,0DH,0DH,0DH,0DH   ;AAAAGGGG
+4F4E   0B 0B 00 00 00 00 00 00 DB   0BH,0BH,00H,00H,00H,00H,00H,00H   ;FFRRRRRR
+4F56   0F 0F 0F 0F 0D 0D 0D 0D DB   0FH,0FH,0FH,0FH,0DH,0DH,0DH,0DH   ;AAAAGGGG
+4F5E   0B 0B 0B 0B 12 12 12 12 DB   0BH,0BH,0BH,0BH,12H,12H,12H,12H   ;FFFFCCCC
+4F66   11 11 0F 0F 0D 0D 0B 0B DB   11H,11H,0FH,0FH,0DH,0DH,0BH,0BH   ;BBAAGGFF
+4F6E   0A 0A 00 00 00 00 00 00 DB   0AH,0AH,00H,00H,00H,00H,00H,00H   ;EERRRRRR
+4F76   19                     DB   19H   
+4F77                DEATH_DATA:      
+4F77   0F 0D 0B 0A 06 06 06 06 DB   0FH,0DH,0BH,0AH,06H,06H,06H,06H   ;AGFECCCC
+4F7F   19                     DB   19H   
+4F80                SAFE_DATA:      
+4F80   0D 0B 0D 0B 11 11 0F 11 DB   0DH,0BH,0DH,0BH,11H,11H,0FH,11H   ;GFGFBBAB
+4F88   0F 0D 0B 0D 11 12 12 12 DB   0FH,0DH,0BH,0DH,11H,12H,12H,12H   ;AGFGBCCC
+4F90   19                     DB   19H   
+4F91                             ; Frog character for the LCD
+4F91                FROG_LCD:      
+4F91                             ;left facing
+4F91   07 0A 10 08 07 04 18 00 DB   07H,0AH,10H,08H,07H,04H,18H,00H   ;Frog Front
+4F99   18 0E 01 01 0E 02 0C 00 DB   18H,0EH,01H,01H,0EH,02H,0CH,00H   ;Frog Back
+4FA1                             ;right facing
+4FA1   03 0E 10 10 0E 08 06 00 DB   03H,0EH,10H,10H,0EH,08H,06H,00H   ;Frog Back
+4FA9   1C 0A 01 02 1C 04 03 00 DB   1CH,0AH,01H,02H,1CH,04H,03H,00H   ;Frog Front
+4FB1                             ;death
+4FB1   00 0E 15 1B 0E 0E 00 00 DB   00H,0EH,15H,1BH,0EH,0EH,00H,00H   ;Skull
+4FB9                             ;winner
+4FB9   00 0A 1F 1F 0E 04 00 00 DB   00H,0AH,1FH,1FH,0EH,04H,00H,00H   ;Heart
+
+
+FROG_XY:            3000 DEFINED AT LINE 33
+                    > USED AT LINE 34
+                    > USED AT LINE 35
+                    > USED AT LINE 194
+                    > USED AT LINE 241
+                    > USED AT LINE 266
+                    > USED AT LINE 364
+                    > USED AT LINE 469
+                    > USED AT LINE 533
+                    > USED AT LINE 568
+FROG_Y:             3000 DEFINED AT LINE 34
+                    > USED AT LINE 276
+                    > USED AT LINE 478
+                    > USED AT LINE 490
+FROG_X:             3001 DEFINED AT LINE 35
+                    > USED AT LINE 247
+                    > USED AT LINE 273
+                    > USED AT LINE 297
+                    > USED AT LINE 503
+                    > USED AT LINE 515
+DIRECTION:          3002 DEFINED AT LINE 36
+                    > USED AT LINE 196
+                    > USED AT LINE 480
+                    > USED AT LINE 492
+                    > USED AT LINE 505
+                    > USED AT LINE 517
+                    > USED AT LINE 569
+MOVE_DELAY:         3003 DEFINED AT LINE 37
+                    > USED AT LINE 197
+                    > USED AT LINE 251
+MOVES:              3004 DEFINED AT LINE 38
+                    > USED AT LINE 198
+                    > USED AT LINE 314
+                    > USED AT LINE 465
+INPUT:              3005 DEFINED AT LINE 39
+                    > USED AT LINE 90
+                    > USED AT LINE 132
+                    > USED AT LINE 166
+                    > USED AT LINE 172
+                    > USED AT LINE 390
+                    > USED AT LINE 422
+TUNE_PLAYED:        3006 DEFINED AT LINE 40
+                    > USED AT LINE 102
+                    > USED AT LINE 221
+                    > USED AT LINE 225
+LAST_KEY:           3007 DEFINED AT LINE 41
+                    > USED AT LINE 103
+                    > USED AT LINE 440
+                    > USED AT LINE 459
+                    > USED AT LINE 468
+BG_CHECKSUM:        3008 DEFINED AT LINE 42
+                    > USED AT LINE 234
+                    > USED AT LINE 281
+                    > USED AT LINE 344
+                    > USED AT LINE 354
+LIVES:              3009 DEFINED AT LINE 43
+                    > USED AT LINE 108
+                    > USED AT LINE 373
+                    > USED AT LINE 629
+SCORE:              300A DEFINED AT LINE 44
+                    > USED AT LINE 104
+                    > USED AT LINE 105
+                    > USED AT LINE 317
+                    > USED AT LINE 320
+                    > USED AT LINE 321
+                    > USED AT LINE 324
+                    > USED AT LINE 326
+                    > USED AT LINE 653
+SCORE_BUF:          300C DEFINED AT LINE 45
+                    > USED AT LINE 655
+                    > USED AT LINE 659
+FROGS_LEFT:         3011 DEFINED AT LINE 46
+                    > USED AT LINE 110
+                    > USED AT LINE 334
+                    > USED AT LINE 626
+FROGS_SAVED:        3012 DEFINED AT LINE 47
+                    > USED AT LINE 106
+                    > USED AT LINE 205
+                    > USED AT LINE 310
+                    > USED AT LINE 312
+HSCORE:             3013 DEFINED AT LINE 48
+                    > USED AT LINE 88
+                    > USED AT LINE 89
+                    > USED AT LINE 327
+                    > USED AT LINE 331
+                    > USED AT LINE 666
+HSCORE_BUF:         3015 DEFINED AT LINE 49
+                    > USED AT LINE 668
+                    > USED AT LINE 672
+BG_MAP:             2000 DEFINED AT LINE 51
+                    > USED AT LINE 201
+                    > USED AT LINE 236
+                    > USED AT LINE 238
+                    > USED AT LINE 259
+                    > USED AT LINE 261
+                    > USED AT LINE 263
+                    > USED AT LINE 563
+                    > USED AT LINE 591
+GLCD_INST:          0007 DEFINED AT LINE 55
+                    > USED AT LINE 15 IN glcd.z80
+                    > USED AT LINE 41 IN glcd.z80
+                    > USED AT LINE 44 IN glcd.z80
+                    > USED AT LINE 170 IN glcd.z80
+                    > USED AT LINE 176 IN glcd.z80
+                    > USED AT LINE 210 IN glcd.z80
+                    > USED AT LINE 213 IN glcd.z80
+GLCD_DATA:          0087 DEFINED AT LINE 56
+                    > USED AT LINE 49 IN glcd.z80
+                    > USED AT LINE 51 IN glcd.z80
+                    > USED AT LINE 181 IN glcd.z80
+SFROG_X:            0038 DEFINED AT LINE 57
+                    > USED AT LINE 192
+SFROG_Y:            0038 DEFINED AT LINE 58
+                    > USED AT LINE 193
+CR:                 000D DEFINED AT LINE 59
+KEY_PLUS:           0010 DEFINED AT LINE 63
+                    > USED AT LINE 160
+KEY_MINUS:          0011 DEFINED AT LINE 64
+                    > USED AT LINE 163
+KEY_GO:             0012 DEFINED AT LINE 65
+                    > USED AT LINE 155
+                    > USED AT LINE 405
+KEY_AD:             0013 DEFINED AT LINE 66
+                    > USED AT LINE 157
+KEY_FIRE2:          0010 DEFINED AT LINE 67
+                    > USED AT LINE 400
+KEY_ENTER:          000A DEFINED AT LINE 68
+                    > USED AT LINE 413
+BEEP:               0003 DEFINED AT LINE 72
+                    > USED AT LINE 463
+                    > USED AT LINE 693
+HL_TO_STR:          0008 DEFINED AT LINE 73
+                    > USED AT LINE 654
+                    > USED AT LINE 667
+SCAN_7SEGS:         000A DEFINED AT LINE 74
+STR_TO_LCD:         000D DEFINED AT LINE 75
+                    > USED AT LINE 129
+                    > USED AT LINE 180
+                    > USED AT LINE 614
+                    > USED AT LINE 620
+                    > USED AT LINE 635
+                    > USED AT LINE 641
+                    > USED AT LINE 646
+                    > USED AT LINE 660
+                    > USED AT LINE 673
+CHR_TO_LCD:         000E DEFINED AT LINE 76
+                    > USED AT LINE 116
+                    > USED AT LINE 142
+                    > USED AT LINE 150
+CMD_TO_LCD:         000F DEFINED AT LINE 77
+                    > USED AT LINE 113
+                    > USED AT LINE 126
+                    > USED AT LINE 139
+                    > USED AT LINE 147
+                    > USED AT LINE 177
+                    > USED AT LINE 610
+                    > USED AT LINE 617
+                    > USED AT LINE 624
+                    > USED AT LINE 651
+                    > USED AT LINE 664
+                    > USED AT LINE 722
+                    > USED AT LINE 725
+                    > USED AT LINE 728
+                    > USED AT LINE 731
+HEX_SCAN:           0010 DEFINED AT LINE 78
+                    > USED AT LINE 443
+MATRIX_SCAN:        0012 DEFINED AT LINE 79
+                    > USED AT LINE 409
+                    > USED AT LINE 449
+JOY_SCAN:           0013 DEFINED AT LINE 80
+                    > USED AT LINE 397
+                    > USED AT LINE 428
+TIME_DELAY:         0021 DEFINED AT LINE 81
+                    > USED AT LINE 690
+PLAY_TUNE:          0023 DEFINED AT LINE 82
+                    > USED AT LINE 679
+PRESTART:           4000 DEFINED AT LINE 86
+START:              400A DEFINED AT LINE 91
+                    > USED AT LINE 382
+LCDCHARLOOP:        4045 DEFINED AT LINE 118
+                    > USED AT LINE 122
+LCDMENU:            404A DEFINED AT LINE 124
+                    > USED AT LINE 173
+                    > USED AT LINE 184
+MENUKEYLOOP:        4073 DEFINED AT LINE 153
+                    > USED AT LINE 164
+MOVECURSOR:         4088 DEFINED AT LINE 165
+                    > USED AT LINE 161
+HELP:               4098 DEFINED AT LINE 175
+                    > USED AT LINE 158
+STARTGAME:          40A6 DEFINED AT LINE 186
+                    > USED AT LINE 156
+                    > USED AT LINE 377
+SAVEDLOOP:          40D2 DEFINED AT LINE 209
+                    > USED AT LINE 214
+DRAWLOOP:           40DC DEFINED AT LINE 217
+                    > USED AT LINE 347
+                    > USED AT LINE 351
+                    > USED AT LINE 353
+                    > USED AT LINE 358
+SKIPTUNE:           40EF DEFINED AT LINE 228
+                    > USED AT LINE 223
+SKIPMOVE:           4118 DEFINED AT LINE 250
+                    > USED AT LINE 244
+MOVETHEREST:        4122 DEFINED AT LINE 257
+                    > USED AT LINE 254
+CHECKCOLLISION:     4147 DEFINED AT LINE 275
+                    > USED AT LINE 256
+                    > USED AT LINE 269
+CHECKHOME:          414A DEFINED AT LINE 278
+SAFE:               4158 DEFINED AT LINE 286
+                    > USED AT LINE 283
+BITLOOP:            4169 DEFINED AT LINE 302
+                    > USED AT LINE 307
+BITEXIT:            4173 DEFINED AT LINE 308
+                    > USED AT LINE 304
+SKIPHSCORE:         41A1 DEFINED AT LINE 332
+                    > USED AT LINE 330
+CHECKROAD:          41A7 DEFINED AT LINE 339
+                    > USED AT LINE 280
+CHECKWATER:         41B8 DEFINED AT LINE 348
+                    > USED AT LINE 341
+                    > USED AT LINE 343
+DEATH:              41CE DEFINED AT LINE 361
+                    > USED AT LINE 249
+                    > USED AT LINE 272
+                    > USED AT LINE 285
+                    > USED AT LINE 346
+                    > USED AT LINE 356
+                    > USED AT LINE 501
+                    > USED AT LINE 513
+ENDGAMECHOICE:      41E9 DEFINED AT LINE 376
+                    > USED AT LINE 337
+DEATHUPDATE:        41F6 DEFINED AT LINE 384
+                    > USED AT LINE 378
+DEATHKEY:           41FA DEFINED AT LINE 388
+CHECKJOY1:          4203 DEFINED AT LINE 396
+                    > USED AT LINE 399
+                    > USED AT LINE 401
+CHECKHEX1:          420D DEFINED AT LINE 403
+                    > USED AT LINE 392
+                    > USED AT LINE 406
+CHECKMAT1:          4213 DEFINED AT LINE 408
+                    > USED AT LINE 394
+                    > USED AT LINE 411
+                    > USED AT LINE 414
+GETKEYPRESS:        421E DEFINED AT LINE 419
+                    > USED AT LINE 230
+CHECKKEYLOOP:       4231 DEFINED AT LINE 432
+                    > USED AT LINE 437
+                    > USED AT LINE 447
+                    > USED AT LINE 455
+RESETKEY:           4238 DEFINED AT LINE 438
+                    > USED AT LINE 430
+                    > USED AT LINE 445
+                    > USED AT LINE 451
+CHECKHEX:           423D DEFINED AT LINE 442
+                    > USED AT LINE 424
+CHECKMAT:           4247 DEFINED AT LINE 448
+                    > USED AT LINE 426
+KEYGOOD:            4254 DEFINED AT LINE 457
+                    > USED AT LINE 436
+K_UP:               4268 DEFINED AT LINE 470
+K_DN:               427A DEFINED AT LINE 482
+                    > USED AT LINE 472
+K_LT:               428E DEFINED AT LINE 494
+                    > USED AT LINE 484
+MOVE_LT:            429B DEFINED AT LINE 502
+                    > USED AT LINE 499
+K_RT:               42A4 DEFINED AT LINE 507
+                    > USED AT LINE 496
+MOVE_RT:            42AF DEFINED AT LINE 514
+                    > USED AT LINE 511
+MAP_JOY:            42B8 DEFINED AT LINE 521
+                    > USED AT LINE 431
+MAP_HEX:            42BC DEFINED AT LINE 523
+                    > USED AT LINE 446
+MAP_MAT:            42C0 DEFINED AT LINE 525
+                    > USED AT LINE 453
+GETBGCHECKSUM:      42C4 DEFINED AT LINE 532
+                    > USED AT LINE 232
+BGROW:              42CB DEFINED AT LINE 535
+                    > USED AT LINE 557
+GETBGLOOP:          42D7 DEFINED AT LINE 545
+                    > USED AT LINE 549
+BGLOOPEXIT:         42DE DEFINED AT LINE 550
+                    > USED AT LINE 544
+DRAWMAPANDFROG:     42E6 DEFINED AT LINE 561
+                    > USED AT LINE 219
+                    > USED AT LINE 287
+                    > USED AT LINE 362
+DRAWSAVED:          4310 DEFINED AT LINE 586
+                    > USED AT LINE 212
+DRAWCOPY:           431E DEFINED AT LINE 595
+                    > USED AT LINE 602
+UPDATELCD:          432A DEFINED AT LINE 608
+                    > USED AT LINE 188
+                    > USED AT LINE 387
+PRINTFROGLOOP:      4352 DEFINED AT LINE 633
+                    > USED AT LINE 637
+PRINTVICTORY:       435C DEFINED AT LINE 639
+                    > USED AT LINE 628
+PRINTGAMEOVER:      4364 DEFINED AT LINE 644
+                    > USED AT LINE 631
+DISPLAYSCORE:       436A DEFINED AT LINE 648
+                    > USED AT LINE 638
+                    > USED AT LINE 643
+PLAYTUNE:           4397 DEFINED AT LINE 678
+                    > USED AT LINE 227
+                    > USED AT LINE 290
+                    > USED AT LINE 371
+INVERTSCREEN:       439B DEFINED AT LINE 685
+                    > USED AT LINE 381
+                    > USED AT LINE 696
+BYTETOBCD:          43AF DEFINED AT LINE 703
+                    > USED AT LINE 316
+BTBCD1:             43B3 DEFINED AT LINE 707
+                    > USED AT LINE 715
+BTBCD2:             43B9 DEFINED AT LINE 713
+                    > USED AT LINE 710
+INITLCD:            43BE DEFINED AT LINE 720
+                    > USED AT LINE 92
+FASTLDIR:           43D3 DEFINED AT LINE 736
+                    > USED AT LINE 98
+                    > USED AT LINE 203
+                    > USED AT LINE 566
+LDIRLOOP:           43E4 DEFINED AT LINE 753
+                    > USED AT LINE 744
+                    > USED AT LINE 772
+LDIRLOOP_END:       4402 DEFINED AT LINE 770
+LCDINTROMESSAGE:    4408 DEFINED AT LINE 775
+                    > USED AT LINE 128
+LCDHELPMESSAGE:     4459 DEFINED AT LINE 781
+                    > USED AT LINE 179
+LCDINPUTARROWS:     44AA DEFINED AT LINE 786
+                    > USED AT LINE 134
+LCDLIVES:           44B0 DEFINED AT LINE 788
+                    > USED AT LINE 613
+LCDSCORE:           44CB DEFINED AT LINE 791
+                    > USED AT LINE 619
+LCDFROG:            44DB DEFINED AT LINE 793
+                    > USED AT LINE 634
+LCDGAMEOVER:        44DF DEFINED AT LINE 795
+                    > USED AT LINE 645
+LCDVICTORY:         44ED DEFINED AT LINE 797
+                    > USED AT LINE 640
+OFFSET_X:           2400 DEFINED AT LINE 5 IN glcd.z80
+                    > USED AT LINE 69 IN glcd.z80
+                    > USED AT LINE 77 IN glcd.z80
+                    > USED AT LINE 104 IN glcd.z80
+                    > USED AT LINE 112 IN glcd.z80
+GBUF:               2400 DEFINED AT LINE 6 IN glcd.z80
+                    > USED AT LINE 96
+                    > USED AT LINE 564
+                    > USED AT LINE 25 IN glcd.z80
+                    > USED AT LINE 26 IN glcd.z80
+                    > USED AT LINE 165 IN glcd.z80
+                    > USED AT LINE 195 IN glcd.z80
+                    > USED AT LINE 284 IN glcd.z80
+V_DELAY_US:         0004 DEFINED AT LINE 7 IN glcd.z80
+                    > USED AT LINE 227 IN glcd.z80
+INITGLCD:           44FB DEFINED AT LINE 10 IN glcd.z80
+                    > USED AT LINE 94
+                    > USED AT LINE 190
+NEXT_CMD:           4500 DEFINED AT LINE 13 IN glcd.z80
+                    > USED AT LINE 18 IN glcd.z80
+CLEARGBUF:          4512 DEFINED AT LINE 24 IN glcd.z80
+CLEARGRLCD:         4521 DEFINED AT LINE 35 IN glcd.z80
+                    > USED AT LINE 21 IN glcd.z80
+CLR_X:              4526 DEFINED AT LINE 38 IN glcd.z80
+                    > USED AT LINE 57 IN glcd.z80
+CLR_Y:              4538 DEFINED AT LINE 48 IN glcd.z80
+                    > USED AT LINE 53 IN glcd.z80
+PUTSPRITEOR:        454B DEFINED AT LINE 64 IN glcd.z80
+PSBLOOP:            4564 DEFINED AT LINE 80 IN glcd.z80
+                    > USED AT LINE 84 IN glcd.z80
+PSBSKIP:            456B DEFINED AT LINE 85 IN glcd.z80
+                    > USED AT LINE 79 IN glcd.z80
+PUTSPRITEAND:       4573 DEFINED AT LINE 99 IN glcd.z80
+PSBLOOP1:           458D DEFINED AT LINE 115 IN glcd.z80
+                    > USED AT LINE 120 IN glcd.z80
+PSBSKIP1:           4596 DEFINED AT LINE 121 IN glcd.z80
+                    > USED AT LINE 114 IN glcd.z80
+FINDPIXEL:          459E DEFINED AT LINE 135 IN glcd.z80
+                    > USED AT LINE 537
+FP_BITS:            45B8 DEFINED AT LINE 159 IN glcd.z80
+                    > USED AT LINE 136 IN glcd.z80
+PLOTTOLCD:          45C0 DEFINED AT LINE 164 IN glcd.z80
+                    > USED AT LINE 99
+                    > USED AT LINE 368
+                    > USED AT LINE 581
+                    > USED AT LINE 688
+PLOT_ROW:           45C5 DEFINED AT LINE 167 IN glcd.z80
+                    > USED AT LINE 188 IN glcd.z80
+PLOT_COLUMN:        45DC DEFINED AT LINE 179 IN glcd.z80
+                    > USED AT LINE 185 IN glcd.z80
+INVERTGBUF:         45EC DEFINED AT LINE 192 IN glcd.z80
+                    > USED AT LINE 687
+INVERTLOOP:         45F4 DEFINED AT LINE 197 IN glcd.z80
+                    > USED AT LINE 202 IN glcd.z80
+SETGRMODE:          45FF DEFINED AT LINE 208 IN glcd.z80
+                    > USED AT LINE 36 IN glcd.z80
+DELAYUS:            460A DEFINED AT LINE 226 IN glcd.z80
+                    > USED AT LINE 16 IN glcd.z80
+                    > USED AT LINE 42 IN glcd.z80
+                    > USED AT LINE 45 IN glcd.z80
+                    > USED AT LINE 50 IN glcd.z80
+                    > USED AT LINE 52 IN glcd.z80
+                    > USED AT LINE 171 IN glcd.z80
+                    > USED AT LINE 177 IN glcd.z80
+                    > USED AT LINE 182 IN glcd.z80
+                    > USED AT LINE 211 IN glcd.z80
+DELAYMS:            460D DEFINED AT LINE 228 IN glcd.z80
+                    > USED AT LINE 20 IN glcd.z80
+                    > USED AT LINE 232 IN glcd.z80
+INIT_BASIC:         4613 DEFINED AT LINE 235 IN glcd.z80
+                    > USED AT LINE 11 IN glcd.z80
+PUTSPRITE_MASKED:   4617 DEFINED AT LINE 242 IN glcd.z80
+                    > USED AT LINE 367
+                    > USED AT LINE 580
+PUTSPRITE_MASKED_LOOP: 4631 DEFINED AT LINE 287 IN glcd.z80
+                    > USED AT LINE 317 IN glcd.z80
+PUTSPRITE_MASKED_ROT: 4641 DEFINED AT LINE 298 IN glcd.z80
+                    > USED AT LINE 303 IN glcd.z80
+PUTSPRITE_MASKED_ROTDONE: 464A DEFINED AT LINE 304 IN glcd.z80
+                    > USED AT LINE 297 IN glcd.z80
+ROTATELEFT:         465B DEFINED AT LINE 323 IN glcd.z80
+                    > USED AT LINE 239
+                    > USED AT LINE 260
+                    > USED AT LINE 264
+SL1:                465D DEFINED AT LINE 325 IN glcd.z80
+                    > USED AT LINE 366 IN glcd.z80
+ROTATERIGHT:        469D DEFINED AT LINE 371 IN glcd.z80
+                    > USED AT LINE 237
+                    > USED AT LINE 262
+SR1:                469F DEFINED AT LINE 373 IN glcd.z80
+                    > USED AT LINE 414 IN glcd.z80
+FROG_UP:            46DE DEFINED AT LINE 12 IN frogger_data.z80
+                    > USED AT LINE 574
+FROG_DN:            46EE DEFINED AT LINE 30 IN frogger_data.z80
+FROG_LT:            46FE DEFINED AT LINE 48 IN frogger_data.z80
+FROG_RT:            470E DEFINED AT LINE 66 IN frogger_data.z80
+FROG_SPLAT:         471E DEFINED AT LINE 84 IN frogger_data.z80
+                    > USED AT LINE 365
+FROG_HOME:          472E DEFINED AT LINE 102 IN frogger_data.z80
+                    > USED AT LINE 593
+SPLASH_SCREEN:      4736 DEFINED AT LINE 113 IN frogger_data.z80
+                    > USED AT LINE 95
+CROSSING_MAP:       4B36 DEFINED AT LINE 180 IN frogger_data.z80
+                    > USED AT LINE 200
+TUNE_DATA:          4F36 DEFINED AT LINE 247 IN frogger_data.z80
+                    > USED AT LINE 226
+DEATH_DATA:         4F77 DEFINED AT LINE 258 IN frogger_data.z80
+                    > USED AT LINE 370
+SAFE_DATA:          4F80 DEFINED AT LINE 262 IN frogger_data.z80
+                    > USED AT LINE 289
+FROG_LCD:           4F91 DEFINED AT LINE 268 IN frogger_data.z80
+                    > USED AT LINE 117
