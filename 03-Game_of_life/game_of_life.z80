@@ -2,8 +2,7 @@
 ; -------------------------------------
 ;(Fast Version)
 ;
-; Written by Brian Chiha
-; brian.chiha@gmail.com  -- Mar 2021
+; Written by Brian Chiha - Mar 2021
 ;
 ; Game of Life is a cellular automation simulation.  Each cell evolves based on the number
 ; of cells that surround it.  The basic cell rules are:
