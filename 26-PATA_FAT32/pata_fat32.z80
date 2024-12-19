@@ -1,0 +1,962 @@
+; PATA drive with FAT32 to TEC-1G Z80 Computer.
+;
+; Entry point: loadFromDisk
+; Uses Mon3 API's but can be modified to suit your own system
+
+;Command block registers
+BASE_ADDR:      .equ    20H             ; Base address A5
+REG_DATA:       .equ    BASE_ADDR+000B  ;Data Register
+REG_ERR:        .equ    BASE_ADDR+001B  ;Read: Error
+REG_FR:         .equ    BASE_ADDR+001B  ;Write: Features
+REG_SC:         .equ    BASE_ADDR+010B  ;Sector Count
+REG_SN:         .equ    BASE_ADDR+011B  ;Sector Number
+REG_LBA7:       .equ    BASE_ADDR+011B  ;LBA Bits 0-7
+REG_CYLO:       .equ    BASE_ADDR+100B  ;Cylinder Low
+REG_LBA15:      .equ    BASE_ADDR+100B  ;LBA Bits 8-15
+REG_CYHI:       .equ    BASE_ADDR+101B  ;Cylinder High
+REG_LBA23:      .equ    BASE_ADDR+101B  ;LBA Bits 16-23
+REG_DH:         .equ    BASE_ADDR+110B  ;Drive/Head
+REG_LBA27:      .equ    BASE_ADDR+110B  ;LBA Bits 24-27
+REG_STATUS:     .equ    BASE_ADDR+111B  ;Read: Status
+REG_CMD:        .equ    BASE_ADDR+111B  ;Write: Command
+REG_DATA_HI:    .equ    BASE_ADDR+1000B ;Data Register High Byte
+
+;Status flags (bits)
+F_BSY:          .equ    7               ;Drive busy
+F_DRDY:         .equ    6               ;Drive ready for command
+F_DSC:          .equ    4               ;Drive head settled over sector
+F_DRQ:          .equ    3               ;Drive ready for r/w
+F_ERR:          .equ    1               ;Drive error
+
+;Features flags
+F_ENA8BIT       .equ    01H             ;Enable 8-bit mode
+F_DIS8BIT       .equ    81H             ;Disable 8-bit mode
+
+;Drive commands
+CMD_INITPAR:    .equ    091H            ;Init drive parameters
+CMD_READ:       .equ    020H            ;Read sector w. retry
+CMD_WRITE:      .equ    030H            ;Write sector w. retry
+CMD_IDENTIFY:   .equ    0ECH            ;Identify device
+CMD_SETFR:      .equ    0EFH            ;Set Features
+CMD_DIAG:	.equ    090H            ;Drive diagnosis
+
+;Constants
+C_RETRIES:      .equ    0FFH            ;Number of retries for busy disk
+C_FILENO:       .equ    0897H           ;Address of File number menu selection 
+
+;MON3 API Calls
+API_STR2LCD:    .equ    0DH             ;string to LCD
+API_CHR2LCD:    .equ    0EH             ;character to LCD
+API_CMD2LCD:    .equ    0FH             ;command to LCD
+API_MENU:       .equ    1FH             ;menu driver
+API_PARAM:      .equ    20H             ;parameter driver
+API_MENUPOP:    .equ    2FH             ;menu pop
+
+;RAM Locations
+HIGH_RAM:       .equ    0800H           ;High RAM
+DISK_BUFF:      .equ    HIGH_RAM - 200H ;Disk data buffer (512 bytes)
+;FAT32 Configuration data
+DATA_START:     .equ    DISK_BUFF - 4   ;Data start sector
+ROOT_CLUS:      .equ    DATA_START - 4  ;Cluster number of the Root Directory / File
+ROOT_START:     .equ    ROOT_CLUS - 4   ;Root directory start sector
+FAT_START:      .equ    ROOT_START - 4  ;Start sector to first FAT
+PART_START:     .equ    FAT_START - 4   ;First sector of partition
+FAT_COUNT:      .equ    PART_START - 1  ;Number of FATs
+FAT_SIZE:       .equ    FAT_COUNT - 4   ;FAT size in sectors
+RSVD_SEC:       .equ    FAT_SIZE - 2    ;Number of reserved sectors
+CLUS_SEC:       .equ    RSVD_SEC - 1    ;Size of a cluster (in sectors)
+VOL_LABEL:      .equ    CLUS_SEC - 11   ;Name of Volume Label
+;File Control Block
+FCB_NAME:       .equ    VOL_LABEL - 12  ;File Name
+FCB_NSEC:       .equ    FCB_NAME - 4    ;Next sector
+FCB_ADDR:       .equ    FCB_NSEC - 2    ;TEC Address of file
+FCB_SCNT:       .equ    FCB_ADDR - 1    ;Sector counter
+;Root File clusters (4 bytes) and file size (2 bytes)
+RFC_LIST:       .equ    FCB_SCNT - 330  ;Root file cluster list
+;Directory Configuration, Max entries = (896 - 19 ) / 16 = 54
+DIR_CFG:        .equ    RFC_LIST - 892 ;100H
+
+loadFromDisk:
+        ;run tests
+        call FATmount                   ;Mount the Drive
+        call FATgetRootDir              ;List root directory
+        ld hl,DIR_CFG
+        ld c,API_MENU                   ;menu driver
+        rst 10H                         ;mon3 API Call
+        ret
+
+
+
+initPata1:
+        call waitBusy               ;Wait for Busy flag to clear
+        ; ld a,F_ENA8BIT              ;Features register 8 bit mode
+        ; out (REG_FR),a
+        ; ld a,CMD_SETFR              ;Send set features command
+        ; out (REG_CMD),a
+        ; call waitDriveReady         ;Wait for Busy flag to clear
+        ret
+
+;wait until busy flag is unset
+;return:  carry not set = device is ready
+;         carry set = device timeout
+;         A = error register if carry is set (could be zero if just a time out)
+;         HL = error message if carry is set
+waitBusy:
+        push bc                     ;save BC
+        and a                       ;clear carry flag
+        ld b,C_RETRIES              ;number of retries to timeout
+waitLoop1:        
+        in a,(REG_STATUS)           ;Read Status register
+        and 11000001B               ;Only bits 7,6 and 0 are needed
+        xor 01000000B               ;Flip disk ready bit
+        jr z,waitExit               ;all good, just exit
+        ld c,0                      ;sub delay
+waitLoop2:
+        dec c                       ;mini loop
+        jr nz,waitLoop2
+        djnz waitLoop1
+        scf                         ;error if here
+        ld hl,MSG_TIMEOUT
+        bit 0,a                     ;check if error bit set
+        ld a,0                      ;default to zero
+        jr z,waitExit               ;no error bit set, just exit
+        in a,(REG_ERR)              ;get error register
+waitExit:
+        pop bc                      ;restore BC
+        ret
+
+;wait for data request to be set.  Meaning data is ready to be sent/received
+;return:  carry not set = data requested
+;         carry set = not data requested (error)
+;         A = error register if carry is set (could be zero if just a no data request)
+;         HL = error message if carry is set
+waitDataRequest:
+        push bc                     ;save BC
+        and a                       ;clear carry flag
+        ld bc,C_RETRIES * 256 + C_RETRIES  ;mega delay as drive head could take a time
+waitDRLoop1:        
+        in a,(REG_STATUS)           ;Read Status register
+        bit 3,a                     ;check data request bit
+        jr nz,waitDRExit            ;its set, all good
+        dec bc                       ;mini loop
+        ld a,c
+        or b
+        jr nz,waitDRLoop1
+        scf                         ;error if here
+        ld hl,MSG_DRQST
+        bit 0,a                     ;check if error bit set
+        ld a,0                      ;default to zero
+        jr z,waitDRExit             ;no error bit set, just exit
+        in a,(REG_ERR)              ;get error register
+waitDRExit:
+        pop bc                      ;restore BC
+        ret
+
+;read a sector from the disk and store in data buffer pointed from HL
+;Input: BCDE = LBA sector address 3,2,1 and 0
+;       HL = Address of data buffer (512 bytes)
+;Output:  carry not set = data read 
+;         carry set = data not read (error)
+IDEreadSector:
+        push bc                     ;save BC
+        push hl                     ;save HL
+        call waitBusy               ;is the drive ready?
+        jr c,doERR                  ;no, error
+        call setLBA                 ;set up LBA
+        call waitBusy               ;is the drive ready?
+        jr c,doERR                  ;no, error
+        ld a,CMD_READ               ;set read command
+        out (REG_CMD),a
+        call waitDataRequest        ;Is the drive ready to send data?
+        jr c,doERR                  ;no, error
+        ld b,0                      ;256 words (512 bytes)
+rsloop:
+        in a,(REG_DATA)	            ;get low byte of ide data word first	
+        ld (hl),a                   ;store low byte
+        inc hl
+        in a,(REG_DATA_HI)          ;get high byte of ide data word from latch
+        ld (hl),a
+        inc hl
+        djnz rsloop
+rsExit:
+        pop hl                      ;restore HL
+        pop bc                      ;restore BC
+        rst 00H                     ;reboot
+
+;general error output routine.  
+;Input: HL = address of ASCII string
+;       A = error register
+doERR:
+        ld b,01H                    ;clear LCD
+        ld c,API_CMD2LCD            ;command to LCD
+        rst 10H                     ;mon3 API Call
+        push af                     ;save error register
+        push hl                     ;save error message
+        ld hl,MSG_IOERR             ;set read message
+        ld c,API_STR2LCD            ;string to LCD
+        rst 10H                     ;mon3 API Cal
+        ld b,0C0H                   ;second row
+        ld c,API_CMD2LCD            ;command to LCD
+        rst 10H                     ;mon3 API Call
+        pop hl
+        ld c,API_STR2LCD            ;string to LCD
+        rst 10H                     ;mon3 API Cal
+        pop af                      ;restore error register
+        call AtoLCD                 ;display error register
+        rst 08H                     ;wait for key press
+        scf                         ;set carry for error
+        jr rsExit                   ;exit cleanly
+
+;write a sector to the disk.
+;Input: BCDE = LBA sector address 3,2,1 and 0
+;       HL = Address of data buffer (512 bytes)
+;Output:  carry not set = data read 
+;         carry set = data not read (error)
+IDEwriteSector:
+        push bc                     ;save BC
+        push hl                     ;save HL
+        call waitBusy               ;is the drive ready?
+        jr c,doERR                  ;no, error
+        call setLBA                 ;set up LBA
+        call waitBusy               ;is the drive ready?
+        jr c,doERR                  ;no, error
+        ld a,CMD_WRITE              ;set write command
+        out (REG_CMD),a
+        call waitDataRequest        ;Is the drive ready to send data?
+        jr c,doERR                  ;no, error
+        ld b,0                      ;256 words (512 bytes)
+wsloop:
+        ld a,(hl)                   ;get low byte
+        ld c,a                      ;store in C
+        inc hl
+        ld a,(hl)                   ;get high byte
+        out (REG_DATA_HI),a         ;send high byte to latch
+        ld a,c                      ;get low byte in A
+        out (REG_DATA),a            ;send low byte and output entire word
+        inc hl
+        djnz wsloop
+        jr rsExit                   ;exit cleanly
+
+;read disk information
+;Input:   HL = Address of data buffer (512 bytes)
+;Output:  carry not set = data read 
+;         carry set = data not read (error)
+IDEdiskInfo:
+        push bc                     ;save BC
+        push hl                     ;save HL
+        call waitBusy               ;is the drive ready?
+        jr c,doERR                  ;no, error
+        call setLBA                 ;set up LBA
+        call waitBusy               ;is the drive ready?
+        jr c,doERR                  ;no, error
+        ld a,CMD_IDENTIFY           ;set identify command
+        out (REG_CMD),a
+        call waitDataRequest        ;Is the drive ready to send data?
+        jr c,doERR                  ;no, error
+        ld b,0                      ;256 words (512 bytes)
+idloop:
+        in a,(REG_DATA)	            ;get low byte of ide data word first
+        ld c,a                      ;store in C	
+        in a,(REG_DATA_HI)          ;get high byte of ide data word from latch
+        ld (hl),a                   ;store low byte
+        inc hl
+        ld (hl),c
+        inc hl
+        djnz idloop
+        jr rsExit                   ;exit cleanly
+
+; Set sector count and LBA registers of the drive
+; Input: BCDE = LBA sector address 3,2,1 and 0
+; Destory: None
+setLBA:
+        push af
+        ;sector count
+        ld a,01H
+        out (REG_SC),a              ;set sector count
+        ld a,e                      ;LBA 0
+        out (REG_LBA7),a            ;set LBA 0-7
+        ld a,d                      ;LBA 1
+        out (REG_LBA15),a           ;set LBA 8-15
+        ld a,c                      ;LBA 2
+        out (REG_LBA23),a           ;set LBA 16-23
+        ld a,b                      ;LBA 3
+        and 00001111B               ;only bits 0-3 are LBA 3
+        or 11100000B                ;select LBA and master drive
+        out (REG_LBA27),a           ;set LBA 24-27
+        pop af
+        ret
+
+;A to LCD.  Display register A to the LCD screen
+AtoLCD:
+        push af                     ;save AF
+        rra                         ;move high
+        rra                         ;nibble to low nibble
+        rra
+        rra
+        call lowNibToString1        ;get lower nibble and save in DE
+        pop af                      ;restore AF
+lowNibToString1:
+        and 0FH                     ;mask out high nibble
+        add a,90H                   ;convert to
+        daa                         ;ASCII
+        adc a,40H                   ;using this
+        daa                         ;amazing routine
+        ld c,API_CHR2LCD            ;character to LCD
+        rst 10H                     ;mon3 API Cal
+        ret                         ;exit back
+
+;Mount the Disk and configure the FAT data for IO
+FATmount:
+        ;get the Master Boot Record located at sector 0 of the disk
+        ld bc,0000H                 ;high lba
+        ld de,0000H                 ;low lba
+        ld hl,DISK_BUFF             ;allocate disk buffer
+        call IDEreadSector          ;get block
+        jp c,FATerror1              ;error
+        ;check 55AAH on MBR trailer
+        ld a,(DISK_BUFF + 01FEH)
+        cp 55H
+        jp nz,FATerror2             ;error
+        ld a,(DISK_BUFF + 01FFH)
+        cp 0AAH
+        jp nz,FATerror2             ;error
+        ;get partition start
+        ld bc,0004H                 ;4 bytes
+        ld hl,DISK_BUFF + 01C6H     ;source of partition 1
+        ld de,PART_START            ;destination
+        ldir                        ;copy it
+        ;read Bios Parameter Block (BPB)
+        ld bc,(PART_START + 2)      ;high lba
+        ld de,(PART_START)          ;low lba
+        ld hl,DISK_BUFF             ;allocate disk buffer
+        call IDEreadSector          ;get block
+        jp c,FATerror3              ;error
+        ;check Bytes per sector is 512
+        ld a,(DISK_BUFF + 0BH)
+        or a                        ;zero
+        jp nz,FATerror4             ;error
+        ld a,(DISK_BUFF + 0CH)
+        cp 02H
+        jp nz,FATerror4             ;error
+        ;get volume label
+        ld bc,0011H                 ;1 bytes
+        ld hl,DISK_BUFF + 47H       ;source of volume lable
+        ld de,VOL_LABEL             ;destination
+        ldir                        ;copy it
+        ;get cluster size
+        ld a,(DISK_BUFF + 0DH)
+        ld (CLUS_SEC),a
+        ;get reserve sector count
+        ld hl,(DISK_BUFF + 0EH)
+        ld (RSVD_SEC),hl
+        ;get Root Cluster
+        ld bc,0004H                 ;4 bytes
+        ld hl,DISK_BUFF + 2CH       ;source of RootClus
+        ld de,ROOT_CLUS             ;destination
+        ldir                        ;copy it
+        ;get FAT count
+        ld a,(DISK_BUFF + 10H)
+        ld (FAT_COUNT),a
+        ;get FAT size
+        ld bc,0004H                 ;4 bytes
+        ld hl,DISK_BUFF + 24H       ;source of FATSz32
+        ld de,FAT_SIZE              ;destination
+        ldir                        ;copy it
+        ;calculate FAT start
+        ld hl,(PART_START)          ;FAT START = PART START + RESERVED SECTORS
+        ld bc,(RSVD_SEC)
+        add hl,bc                   ;add lower parts together
+        ld (FAT_START),hl           ;save to lower of fat start
+        ld hl,(PART_START + 2)      
+        ld bc,0000H                 ;upper part
+        adc hl,bc                   ;add high parts with carry together
+        ld (FAT_START + 2),hl       ;save to higher of fat start
+        ;calculate Data Start Sector = FAT_START + (FAT_COUNT * FAT_SIZE)
+        ld a,(FAT_COUNT)            ;get number of FATs
+        ld de,(FAT_SIZE)            ;get lower byte
+        ld bc,(FAT_SIZE+2)          ;get upper byte
+        call BCDEtimeA              ;get product
+        ld de,(FAT_START)
+        ld bc,(FAT_START+2)         ;get fat start
+        add ix,de                   ;add lower word
+        adc hl,bc                   ;add upper word
+        ld (DATA_START),ix          ;save ROOT_START
+        ld (DATA_START+2),hl
+        ;calculate Root Directory.  This is the Root Cluster
+        ld de,(ROOT_CLUS)           ;get root cluster number
+        ld bc,(ROOT_CLUS+2)
+        call FATgetSector           ;get root cluster sector
+        ld (ROOT_START),ix          ;save root directory
+        ld (ROOT_START+2),hl
+        ret
+
+FATerror1:
+        ld hl,MSG_MBR               ;Master Boot Record
+        jr FATerror
+FATerror2:
+        ld hl,MSG_MBR_BAD           ;MBR Illegal
+        jr FATerror
+FATerror3:
+        ld hl,MSG_BPB               ;BPB failure
+        jr FATerror
+FATerror4:
+        ld hl,MSG_BPS               ;Bytes per sector
+        jr FATerror
+FATerror5:
+        ld hl,MSG_ROOT              ;Root dir error
+        jr FATerror
+FATerror6:
+        ld hl,MSG_FILE              ;File not found
+        jr FATerror
+FATerror7:
+        ld hl,MSG_INTEL             ;Bad Checksum
+        jr FATerror
+
+FATerror:
+        push bc                     ;save BC
+        push hl                     ;save HL
+        jp doERR                    ;display the error
+
+;Get the root directory.  Only look at visiable, short name files.  Fill out 
+;menu data structure with directory listing
+FATgetRootDir:
+        ;create menu configuration
+        ld de,DIR_CFG               ;get menu config
+        xor a                       ;clear count
+        ld (de),a
+        inc de
+        ld hl,MENU_SEG              ;get menu segments
+        ld bc,14
+        ldir                        ;copy segment/menu text
+        ld hl,VOL_LABEL             ;get volumen label
+        ld bc,11
+        ldir
+        xor a
+        ld (de),a                   ;zero terminate string
+        inc de
+        push de
+        ;iterate through the 32 byte directory enties, and single out visable short files
+        ld hl,DISK_BUFF
+        ld de,(ROOT_START)
+        ld bc,(ROOT_START+2)
+        call FATreadSector
+        ld ix,DISK_BUFF-32          ;start of diretory buffer
+        pop de
+dirLoop:
+        push de
+        ld bc,32                    ;skip to next directory entry (32 bytes)
+        add ix,bc
+        ld hl,HIGH_RAM              ;check if end of sector
+        or a                        ;clear carry
+        push ix
+        pop bc
+        sbc hl,bc
+        jr nz,skipLoadNextSec
+        ;load next sector
+        ld hl,DISK_BUFF
+        ld de,(FCB_NSEC)
+        ld bc,(FCB_NSEC+2)
+        call FATreadSector
+        ld ix,DISK_BUFF             ;start of new diretory sector
+skipLoadNextSec:
+        pop de
+        ld a,(ix+0)                 ;check first character
+        cp 00H                      ;is it end of directory listing?
+        ret z                       ;yes, all done, exit
+        cp 0E5H                     ;is it a deleted file?
+        jr z,dirLoop                ;ignore
+        ld a,(ix+11)                ;get attribute byte
+        cp 20H                      ;must be ATTR_ARCHIVE only
+        jr nz,dirLoop               ;ignore if otherwise
+        ;good file, copy it to menu configuration
+        ld bc,8                     ;get main part of file name
+        push ix
+        pop hl
+spaceLoop:
+        ld a,(hl)                   ;get character
+        cp " "                      ;is it a space?
+        jr z,mainDone
+        ldi
+        jp pe,spaceLoop
+mainDone:
+        add hl,bc                   ;move hl to correct position
+        ld a,"."                    ;separate with a dot
+        ld (de),a                   ;zero terminate string
+        inc de
+        ld bc,3                     ;get extension part of file name
+        ldir
+        xor a
+        ld (de),a                   ;zero terminate string
+        inc de
+        ld bc,FATfileLoader         ;get address of function
+        ld a,c
+        ld (de),a
+        inc de
+        ld a,b
+        ld (de),a                   ;store it in menu config
+        inc de
+        ld a,(DIR_CFG)               ;get menu count
+        push af                     ;store menu count
+        ;store cluster number and file size
+        ld hl,RFC_LIST
+        rlca                        ;x2
+        ld b,a                      ;save x2
+        rlca                        ;x4
+        add a,b                     ;x6
+        add a,l                     ;index list to menu count number
+        ld l,a
+        jr nc,$+3
+        inc h
+        ld a,(ix+26)                ;First cluster low word
+        ld (hl),a
+        inc hl
+        ld a,(ix+27)                ;First cluster low word
+        ld (hl),a
+        inc hl
+        ld a,(ix+20)                ;First cluster high word
+        ld (hl),a
+        inc hl
+        ld a,(ix+21)                ;First cluster high word
+        ld (hl),a
+        inc hl
+        ld a,(ix+28)                ;File size low word
+        ld (hl),a       
+        inc hl
+        ld a,(ix+29)                ;File size high word
+        ld (hl),a       
+        pop af                      ;restore menu count
+        inc a
+        ld (DIR_CFG),a              ;save menu count
+        jp dirLoop                  ;repeat
+
+MENU_SEG:       .db "LOAD--Volume: "
+
+;Load a file from menu.  First get the file number in the menu.  Use this
+;to index the RFC_LIST to get the file cluster and file size.  Save file name 
+;to FCB_NAME and Finally, ask for an address to load to and load the cluster to
+;that address
+FATfileLoader:
+        ;get file name 
+        call saveFileName           ;save the file name to FCB_NAME
+        ;see if its an Intel Hex File *.hex extension
+        ld hl,FCB_NAME              ;name of file
+        ld bc,9                     ;up to 9 chars for file name
+        ld a,'.'                    ;file extension separator
+        cpir                        ;move hl to extension
+        ld de,HEX_EXT
+        ;check extension for .hex
+cpstr:
+        ld a,(de)                   ;file extension
+        cp (hl)                     ;does character match
+        inc de
+        inc hl
+        jr nz,loadFile              ;not HEX, load file as data
+        ld a,(de)
+        or a                        ;end of string?
+        jr nz,cpstr                 ;no check next character
+        ;must be hex file
+        call loadHEX                ;load intel hex file
+        jp nz,FATerror7             ;error
+        jr fileLoaded               ;exit cleanly
+loadFile:
+        ;get save address via parameter driver
+        ld a,(C_FILENO)             ;map to mon3 Menu data for selected menu entry
+        push af                     ;save file number        
+        ld hl,LOAD_CFG              ;load parameter configuration
+        ld c,API_PARAM              ;parameter driver
+        rst 10H                     ;mon3 API Call
+        pop af
+        ;get cluster from RFC_LIST
+        ld (C_FILENO),a             ;map to mon3 Menu data for selected menu entry
+        call getFirstCluster        ;get first cluster of file selected
+        push ix                     ;save file size
+        call FATgetSector           ;get sector of cluster
+        ld hl,DISK_BUFF
+        ld de,(FCB_NSEC)
+        ld bc,(FCB_NSEC+2)
+        call FATreadSector          ;read sector of file
+        ;keep going until all bytes are copied.
+        ld ix,HIGH_RAM              ;end of sector
+        pop bc                      ;get file size
+        ld hl,DISK_BUFF             ;source
+        ld de,(FCB_ADDR)            ;destination
+fileCopyLoop:
+        ldi
+        jp po,fileLoaded            ;no data left
+        ld a,d                      ;check for max address 0x0000
+        or e
+        jr z,fileLoaded
+        ld a,ixl
+        cp l
+        jr nz,fileCopyLoop          ;check if next sector needed
+        ld a,ixh
+        cp h
+        jr nz,fileCopyLoop          ;check if next sector needed
+        ;load next sector
+        push bc
+        push de
+        ld hl,DISK_BUFF
+        ld de,(FCB_NSEC)
+        ld bc,(FCB_NSEC+2)
+        call FATreadSector
+        ld hl,DISK_BUFF             ;source
+        pop de
+        pop bc
+        jr fileCopyLoop
+fileLoaded:
+        ;pop menu off
+        ld c,API_MENUPOP            ;menu pop off
+        rst 10H                     ;mon3 API Call
+        ret
+
+HEX_EXT:        .db "HEX",0
+
+;Load a intel HEX file from menu.  First get the file number in the menu.  Use this
+;to index the RFC_LIST to get the file cluster and file size.  Then iterate through
+;the data converting it to binary
+loadHex:
+        ;get cluster from RFC_LIST
+        ld a,(C_FILENO)             ;map to mon3 Menu data for selected menu entry
+        call getFirstCluster        ;get first cluster of file selected
+        call FATgetSector           ;get sector of cluster
+        ld hl,DISK_BUFF
+        ld de,(FCB_NSEC)
+        ld bc,(FCB_NSEC+2)
+        call FATreadSector          ;read sector of file
+        ;keep going until all bytes are copied.
+        ld ix,HIGH_RAM              ;end of sector
+        ld iy,DISK_BUFF             ;source
+intelLoader1:
+        ld c,0                      ;clear checksum
+        ;Get header information
+intelMark1:
+        call checkEndBuff           ;check if reached end of buffer
+        ld a,(iy+0)                 ;get byte
+        inc iy                      ;move to next char
+        cp ':'                      ;Is byte received a colon?
+        jr nz,intelMark1            ;No, loop until a colon is found
+        call getHexByte1            ;Convert ASCII to Byte (Length)
+        ld b,a                      ;Store Record Length in B
+        call getHexByte1            ;Convert ASCII to Byte (Destination address)
+        ld h,a                      ;Store High Address byte in H
+        call getHexByte1            ;Convert ASCII to Byte (Destination address)
+        ld l,a                      ;Store Low Address byte in L
+        call getHexByte1            ;Convert ASCII to Byte (Record Type)
+        jr nz,intelCheckSum1        ;Anything non zero treat as EOF
+        ;C=checksum, B=number of bytes, HL=destination address
+        ;Load bytes to (HL), B times
+intelLoad1:
+        call getHexByte1            ;Convert ASCII to Byte (Data)
+        ld (hl),a                   ;store data in RAM
+        inc hl                      ;move to next RAM location
+        djnz intelLoad1             ;repeat until B=0
+        call intelCheckSum1         ;Get checksum value
+        jr z,intelLoader1           ;Line is processed and okay, get next line
+        ret                         ;Exit with zero flag not set (load error)
+intelCheckSum1:
+        call getHexByte1            ;Convert ASCII to Byte (Checksum)
+        ld a,c                      ;Final Checksum is zero if okay
+        or a                        ;set zero flag
+        ret                         ;get next line or exit
+
+        ;Get ASCII character from FTDI AND convert it to a byte
+        ;IE: "D3" -> 0D3H
+getHexByte1:
+        call getHexChar1            ;Get first Hex character from FTDI
+        rlca                        ;Move lower nibble
+        rlca                        ;(first character)
+        rlca                        ;to upper
+        rlca                        ;nibble in A
+        ld d,a                      ;store it in D
+        call getHexChar1            ;Get second Hex character from FTDI
+        or d                        ;make a byte
+        ;add byte to checksum
+        push af                     ;save AF
+        add a,c                     ;add existing checksum C to current byte
+        ld c,a                      ;load total back to C
+        pop af                      ;restore AF
+        ret
+getHexChar1:
+        call checkEndBuff           ;check if reached end of buffer
+        ld a,(iy+0)                 ;Get next byte
+        inc iy
+        bit 6,a                     ;is the chracter 0-9 or A-F?
+        jr z,$+4                    ;Its 0-9 skip A-F adjustment
+        add a,9                     ;add 9 to fix A-F
+        and 0FH                     ;mask out high nibble and convert to binary
+        ret
+        ;Check if End of disk buffer and get a new one if at end
+checkEndBuff:
+        ld a,ixl
+        cp iyl
+        ret nz                      ;different
+        ld a,ixh
+        cp iyh
+        ret nz                      ;different
+        ;load next sector
+        push bc
+        push de
+        push hl
+        ld hl,DISK_BUFF
+        ld de,(FCB_NSEC)
+        ld bc,(FCB_NSEC+2)
+        call FATreadSector
+        ld iy,DISK_BUFF              ;source
+        pop hl
+        pop de
+        pop bc
+        ret
+
+;Read a Sector and fill out next sector in cluster.  If end of cluster,
+;get the next cluster and sector from File Allocation Table (FAT)
+;Input: BCDE = LBA sector address 3,2,1 and 0
+;       HL = Address of data buffer (512 bytes)
+;Output: FCB_NSEC set to next sector
+FATreadSector:
+        ;check if all sectors in cluster have been read
+        ld a,(FCB_SCNT)             ;get current sector count
+        or a                        ;is it zero
+        jr nz,readSector            ;no, just read sector
+        ;set next cluster and sector from FAT
+        ;(Current Cluster * 4) + FAT_START
+        ;Get sector in FAT where cluster is
+        ld hl,(ROOT_CLUS)           ;get current cluster
+        ld de,(ROOT_CLUS+2)
+        ld c,128
+        call DEHLDivC               ;(Current Cluster  / 128)
+        push af                     ;store remainder
+        ;DEHL = cc/128
+        ld bc,(FAT_START)
+        add hl,bc
+        ex de,hl
+        ld bc,(FAT_START+2)         ;get fat start
+        adc hl,bc
+        push hl
+        pop bc
+        ;BCDE = LBA sector address 3,2,1 and 0
+        ld hl,DISK_BUFF
+        call IDEreadSector          ;get sector of FAT for cluster
+        pop af                      ;get remainder from AF to get offset
+        ld e,a
+        ld d,0
+        ld bc,0
+        ld a,4
+        push ix
+        call BCDEtimeA              ;multipy it by 4.  Result in IX
+        ld hl,DISK_BUFF
+        ld a,ixl
+        add a,l
+        ld l,a
+        jr nc,$+3
+        inc h
+        ;HL is now pointing to next cluster
+        ld e,(hl)                   ;BCDE = cluster number in HL
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld c,(hl)
+        inc hl
+        ld b,(hl)
+        ld (ROOT_CLUS),de           ;save root cluster
+        ld (ROOT_CLUS+2),bc
+        ld a,(CLUS_SEC)             ;get cluster sector
+        ld (FCB_SCNT),a             ;and set it to sector count
+        ;read sector of cluster
+        call FATgetSector           ;get sector of cluster
+        ld hl,DISK_BUFF
+        ld de,(FCB_NSEC)
+        ld bc,(FCB_NSEC+2)
+        pop ix
+readSector:
+        call IDEreadSector
+        jp c,FATerror5              ;error
+        ;fill FCB Next Sector
+        ld hl,0001H
+        add hl,de
+        ld (FCB_NSEC),hl
+        ld hl,0000H
+        adc hl,bc
+        ld (FCB_NSEC+2),hl
+        ld hl,FCB_SCNT              ;get current sector count
+        dec (hl)                    ;decrease by one
+        ret
+
+;Get the sector based off a cluster number
+;Uses the formula ((Cluster Number - 2) * Sectors Per Cluster) + Data Start
+;Input: BCDE = 32 bit cluster number
+;Output: HLIX = 32 bit sector number
+;        (FCB_NSEC) = HLIX
+FATgetSector:
+        ld a,2                      ;cluster base
+        cpl                         ;take 2 from cluster number
+        scf
+        adc a,e
+        ld e,a
+        jr c,nodec
+        dec d
+        jp p,nodec
+        dec bc
+nodec:
+        ld a,(CLUS_SEC)             ;get clusters per sector
+        call BCDEtimeA              ;get sector of cluster
+        ld bc,(DATA_START)          ;get low byte of data start
+        add ix,bc                   ;get addition
+        ld bc,(DATA_START+2)        ;get high byte of data start
+        adc hl,bc                   ;get addition
+        ;save in FCB_NSEC
+        ld (FCB_NSEC),ix
+        ld (FCB_NSEC+2),hl
+        ret
+
+;Save file name from menu to FCB_NAME
+;Output: FCB_NAME populated with file name selected
+saveFileName:
+        ld hl,DIR_CFG + 7           ;start from menu title
+        ld bc,893                   ;size of max menu
+        xor a
+        cpir                        ;skip menu title
+        ld a,(C_FILENO)             ;map to mon3 Menu data for selected menu entry
+titleLoop:
+        or a                        ;is it zero?
+        jr z,saveTitle
+        ld d,a                      ;save file number
+        xor a
+        cpir                        ;find next file name
+        inc hl                      ;skip menu routine function
+        inc hl
+        jp po,FATerror6             ;file not found
+        dec d
+        ld a,d
+        jr titleLoop                ;loop again until title is found
+saveTitle:
+        ld bc,12                    ;up to 12 bytes
+        ld de,FCB_NAME              ;save file name
+saveLoop:
+        ldi                         ;copy it
+        ld a,(hl)
+        or a                        ;is it zero?
+        jr nz,saveLoop
+        ;fill rest with spaces
+        or c                        ;are there none left?
+        ret z
+        ld b,c
+        ld a," "                    ;space
+fillLoop:
+        ld (de),a
+        inc de
+        djnz fillLoop
+        ret
+
+;Get first cluster of file selected on menu
+;Input: A = index of file selected from menu
+;Output: BCDE = 32 bit cluster number
+;        IX = file size
+;        (ROOT_CLUS) = BCDE
+;Destroy: HL,A
+getFirstCluster:
+        inc a                       ;move to next entry as I want to look back
+        rlca                        ;x2
+        ld b,a                      ;save x2
+        rlca                        ;x4
+        add a,b                     ;x6
+        ld hl,RFC_LIST
+        add a,l                     ;index list to menu count number
+        ld l,a
+        jr nc,$+3
+        inc h
+        ;get file size
+        dec hl
+        ld b,(hl)
+        dec hl
+        ld c,(hl)
+        push bc                     ;save for after cluster load
+        pop ix
+        ;check for zero file size and make FFFF
+        ld a,ixl
+        or a
+        jr nz,getCluster
+        ld a,ixh
+        or a
+        jr nz,getCluster
+        dec ix
+getCluster:
+        dec hl
+        ;get cluster number
+        ld b,(hl)                   ;BCDE = cluster number in HL
+        dec hl
+        ld c,(hl)
+        dec hl
+        ld d,(hl)
+        dec hl
+        ld e,(hl)
+        ld (ROOT_CLUS),de           ;save root cluster
+        ld (ROOT_CLUS+2),bc
+        ld a,(CLUS_SEC)             ;get cluster sector
+        ld (FCB_SCNT),a             ;and set it to sector count
+        ret
+
+;Messages (Max 15 characters plus 1 space)
+MSG_TIMEOUT:    .db "Disk Timeout ",0
+MSG_DRQST:      .db "Data Not Ready ",0
+MSG_IOERR:      .db "IDE ERR IO Bad ",0
+MSG_MBR:        .db "Can't read MBR ",0
+MSG_MBR_BAD:    .db "MBR Illegal ",0
+MSG_BPB:        .db "BPB Read Fail ",0
+MSG_BPS:        .db "Byt/Sec != 512 ",0
+MSG_ROOT:       .db "Root Dir Read ",0
+MSG_FILE:       .db "File Not Found ",0
+MSG_INTEL:      .db "Bad Checksum ",0
+
+;Parameter Configuration for Load and Save addresses
+LOAD_CFG:
+                .db 1                           ;one parameters
+                .db "ADDRES"                    ;7seg Text
+                .db " File Load Address ",0     ;Parameter title
+                .db "Load To Addr:",0        ;Text and Address
+                .dw FCB_ADDR
+
+;Mathematical Routines
+;---------------------
+
+;32 bit times 8 bit routine.
+;Input: DEBC = first operand
+;       A = second operand
+;Output: AHLIX = 40-bit result
+;        carry reset
+;        z set if top 8 bits are 0
+BCDEtimeA:
+        ld hl,0000H
+        ld ix,0000H
+        call $+3
+        call $+3
+        call $+3
+        add ix,ix
+        adc hl,hl
+        adc a,a
+        ret nc
+        add ix,de
+        adc hl,bc
+        adc a,0
+        ret
+
+;32 bit divide by 8 bit routine.
+;Input: DEHL = numerator
+;       C = denominator
+;Output: DEHL = quotient
+;        A = remainder,
+;Destroys: B
+DEHLDivC:
+        ld b,32
+        xor a
+divloop:
+        add hl,hl
+        rl e
+        rl d
+        rla
+        cp c
+        jr c,divlbl
+        inc l
+        sub c
+divlbl:
+        djnz divloop
+        ret
