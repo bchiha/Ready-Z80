@@ -181,7 +181,7 @@ rsloop:
 rsExit:
         pop hl                      ;restore HL
         pop bc                      ;restore BC
-        rst 00H                     ;reboot
+        ret
 
 ;general error output routine.  
 ;Input: HL = address of ASCII string
@@ -205,7 +205,9 @@ doERR:
         call AtoLCD                 ;display error register
         rst 08H                     ;wait for key press
         scf                         ;set carry for error
-        jr rsExit                   ;exit cleanly
+        pop hl                      ;restore HL
+        pop bc                      ;restore BC
+        rst 00H                     ;reboot
 
 ;write a sector to the disk.
 ;Input: BCDE = LBA sector address 3,2,1 and 0
@@ -346,6 +348,7 @@ FATmount:
         ;get cluster size
         ld a,(DISK_BUFF + 0DH)
         ld (CLUS_SEC),a
+        ld (FCB_SCNT),a             ;and set it to sector count
         ;get reserve sector count
         ld hl,(DISK_BUFF + 0EH)
         ld (RSVD_SEC),hl
@@ -743,12 +746,11 @@ FATreadSector:
         ld a,4
         push ix
         call BCDEtimeA              ;multipy it by 4.  Result in IX
+        ;Index DISK_BUFF to next cluster
+        push ix
+        pop de
         ld hl,DISK_BUFF
-        ld a,ixl
-        add a,l
-        ld l,a
-        jr nc,$+3
-        inc h
+        add hl,de
         ;HL is now pointing to next cluster
         ld e,(hl)                   ;BCDE = cluster number in HL
         inc hl

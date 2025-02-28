@@ -1,7 +1,7 @@
 "Reference"  ,"Value"               ,"Notes"
 "D1"         ,"3mm Red LED"         ,""
 "J1"         ,"02x20 Female Header" ,"2.54mm Pitch, Long Pins"
-"J2"         ,"02x22 Male Header"   ,"2mm Pitch (IDE)"
+"J2"         ,"02x22 Male Header"   ,"2.00mm Pitch (IDE)"
 "J3"         ,"01x10 Female Header" ,"2.54mm Pitch, Long Pins"
 "J4"         ,"01x15 Female Header" ,"2.54mm Pitch, Long Pins"
 "J5"         ,"02x07 Male Header"   ,"2.54mm Pitch"
@@ -21,4 +21,10 @@
 "Connector"  ,"02x22 2mm IDC Cable" ,"2mm Pitch Connectors and Ribbon"
 "Connector"  ,"PATA to USB 2.0"     ,"https://www.ebay.com.au/itm/195287884573"
 "HDD"        ,"PATA Drive"          ,"https://www.ebay.com.au/itm/151955808319"
+
+For Compact Flash instead of a hard drive use:
+"Connector"  ,"CF to IDE"           ,"https://www.ebay.com.au/itm/395749524762"
+"Adaptor"    ,"CF to USB 3.0"       ,"https://www.ebay.com.au/itm/373440358351"
+"CF"         ,"CF Card"             ,"https://www.ebay.com.au/itm/305537726616"
+
 
