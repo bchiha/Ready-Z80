@@ -1,0 +1,801 @@
+0000                             ;------------------------------------------
+0000                             ; Pre-emptive Multitasking Simulator
+0000                             ;------------------------------------------
+0000                             ; 
+0000                             ; This "Proof of concept" program simulates task multitasking that can run up
+0000                             ; to eight separate tasks at the same time.  When the CPU triggers an interrupt,
+0000                             ; CPU registers are saved onto the task's stack, then the next task stack is
+0000                             ; swapped into the stack pointer.  The CPU registers are restored from the stack and
+0000                             ; the Program Counter is resumed to the new task.
+0000                             ; 
+0000                             ; This code does have limitation in particular the size of the task stacks and the number
+0000                             ; of tasks.  Also, the more tasks loaded, the slower each task goes.  The task swapper
+0000                             ; routine which is called when an interrupt happens is about 430 clock cycles.  Its the
+0000                             ; smallest I can get it.
+0000                             ; 
+0000                             ; Interrupts are set at about 50Hz, but it can be lower.  A separate add-on board is
+0000                             ; required to be attached to the INT line which produces are square wave of about 50Hz
+0000                             ; or less.
+0000                             ; 
+0000                             ; This code is designed for the TEC-1G Z80 computer using Mon3 as the monitor.  The
+0000                             ; Task Swapper routine is inserted into address 0892H which will be called when
+0000                             ; an INT occurs.
+0000                             ; RAM Constants
+0000                TK_STACKS:   EQU   2000h   ;task stacks.  32 bytes each
+0000                TK_SPS:   EQU   3000h   ;task stack addresses (max 8 tasks)
+0000                TK_CURRENT:   EQU   3020h   ;current stack address pointer
+0000                TK_COUNTER:   EQU   3022h   ;temp counter
+0000                             ; Macro for task registration.  This macro registers a task into the task queue
+0000                             ; and creates a unique label for task RAM usage.
+0000                .macro REGTASK,task,number
+0000                             ; 
+0000                 task_ram    .equ    1000h + (number * 100h)
+0000                 ld de,task
+0000                 call registerTask
+0000                .endm
+0000                 
+4000                          .ORG   4000h   
+4000                START:       
+4000                             ;Task Setup.  Create unique task stacks by adding the start address of each
+4000                             ;task on the task stack and and pre-fill registers on the stack.
+4000   AF                     XOR   a   
+4001   32 22 30               LD   (TK_COUNTER),a   ;reset counter
+4004                             ;initialize stack pointer list
+4004   3E FF                  LD   a,0ffh   
+4006   21 00 30               LD   hl,TK_SPS   
+4009   11 01 30               LD   de,TK_SPS+1   
+400C   77                     LD   (hl),a   
+400D   01 1F 00               LD   bc,1fh   
+4010   ED B0                  LDIR      
+4012                             ;load the menu to select tasks to register
+4012   0E 1F                  LD   c,1FH   ;Mon3 Menu Driver
+4014   21 A9 40               LD   hl,menuCFG   
+4017   D7                     RST   10H   ;Launch the menu
+4018                             ;Start Multitasking
+4018                STARTMULTITASK:      
+4018                             ;initialise current stack pointer to point to the first task
+4018   11 00 30               LD   de,TK_SPS   
+401B   21 20 30               LD   hl,TK_CURRENT   
+401E   73                     LD   (hl),e   
+401F   23                     INC   hl   
+4020   72                     LD   (hl),d   
+4021                             ;set up mon3 interrupt mode 1
+4021   21 66 40               LD   hl,taskSwapper   
+4024   22 92 08               LD   (0892H),hl   
+4027   ED 56                  IM   1   
+4029                             ;start first task and enable interrupts
+4029   ED 7B 00 30            LD   sp,(TK_SPS)   
+402D   FB                     EI      ;enable interrupts to start it off
+402E   C9                     RET      ;jump to first task.  PC stored on stack
+402F                             ;Register Task.  This routine sets up a unique stack area for each task.  It places
+402F                             ;the address of the task onto the stack.  This will be used to return back to the
+402F                             ;task when the task swapper exits.  Then the stack pointer is shifted down with
+402F                             ;space for the registers.  Each stack will start with all registers at zero.
+402F                REGISTERTASK:      
+402F   21 00 20               LD   hl,TK_STACKS   
+4032   3A 22 30               LD   a,(TK_COUNTER)   
+4035   87                     ADD   a,a   ;x2
+4036   47                     LD   b,a   ;save x2
+4037   87                     ADD   a,a   ;x4
+4038   87                     ADD   a,a   ;x8
+4039   87                     ADD   a,a   ;x16
+403A   87                     ADD   a,a   ;x32
+403B   ED 44                  NEG      
+403D   85                     ADD   a,l   
+403E   6F                     LD   l,a   
+403F   F5                     PUSH   af   
+4040   28 01                  JR   z,rt1   ;if first task ignore dec
+4042   25                     DEC   h   
+4043                RT1:         
+4043                             ;save PC to stack
+4043   2B                     DEC   hl   
+4044   72                     LD   (hl),d   
+4045   2B                     DEC   hl   
+4046   73                     LD   (hl),e   
+4047   F1                     POP   af   
+4048   28 0D                  JR   z,saveStack   
+404A                             ;fill AF,BC,DE,HL,IX,IY,"AF,"BC,"DE,"HL to zero
+404A   2B                     DEC   hl   
+404B   AF                     XOR   a   
+404C   77                     LD   (hl),a   
+404D   54 5D                  LD   de,hl   
+404F   1B                     DEC   de   
+4050   C5                     PUSH   bc   
+4051   01 13 00               LD   bc,20-1   
+4054   ED B8                  LDDR      
+4056   C1                     POP   bc   
+4057                             ;save stack to stack list
+4057                SAVESTACK:      
+4057   78                     LD   a,b   
+4058   11 00 30               LD   de,TK_SPS   
+405B   83                     ADD   a,e   
+405C   5F                     LD   e,a   
+405D   EB                     EX   de,hl   
+405E   73                     LD   (hl),e   
+405F   23                     INC   hl   
+4060   72                     LD   (hl),d   
+4061   21 22 30               LD   hl,TK_COUNTER   
+4064   34                     INC   (hl)   
+4065   C9                     RET      
+4066                             ;Task Swapper.  This routine gets called on every interrupt.  It first
+4066                             ;saves all register for the task onto the tasks stack.  Then it updates
+4066                             ;the stack pointer value to the current task stack list.  Gets the next
+4066                             ;task stack and finally pops all the registers off the new stack and
+4066                             ;returns.  This will restore the Program Counter to the line when the
+4066                             ;interrupt occurred.
+4066                TASKSWAPPER:      
+4066                             ;push all register onto the task stack (PC is already on stack)
+4066   08                     EX   af,af'   
+4067   D9                     EXX      
+4068   E5                     PUSH   hl   
+4069   D5                     PUSH   de   
+406A   C5                     PUSH   bc   
+406B   F5                     PUSH   af   
+406C   D9                     EXX      
+406D   08                     EX   af,af'   
+406E   FD E5                  PUSH   iy   
+4070   DD E5                  PUSH   ix   
+4072   E5                     PUSH   hl   
+4073   D5                     PUSH   de   
+4074   C5                     PUSH   bc   
+4075   F5                     PUSH   af   
+4076                             ;save SP to current stack pointer address
+4076   ED 5B 20 30            LD   de,(TK_CURRENT)   
+407A   21 00 00               LD   hl,0   
+407D   39                     ADD   hl,sp   
+407E   EB                     EX   de,hl   
+407F   73                     LD   (hl),e   
+4080   23                     INC   hl   
+4081   72                     LD   (hl),d   
+4082                             ;get next task stack
+4082   23                     INC   hl   
+4083   7E                     LD   a,(hl)   
+4084   3C                     INC   a   
+4085   20 03                  JR   nz,st1   ;jump if not at end of list
+4087   21 00 30               LD   hl,TK_SPS   ;default to start of list if at the end
+408A                ST1:         
+408A   22 20 30               LD   (TK_CURRENT),hl   
+408D                             ;set new stack pointer
+408D   F9                     LD   sp,hl   ;do a ld sp,(hl) ; and save as stack pointer
+408E   E1                     POP   hl   
+408F   F9                     LD   sp,hl   
+4090                             ;restore register for next task
+4090   F1                     POP   af   
+4091   C1                     POP   bc   
+4092   D1                     POP   de   
+4093   E1                     POP   hl   
+4094   DD E1                  POP   ix   
+4096   FD E1                  POP   iy   
+4098   D9                     EXX      
+4099   08                     EX   af,af'   
+409A   F1                     POP   af   
+409B   C1                     POP   bc   
+409C   D1                     POP   de   
+409D   E1                     POP   hl   
+409E   D9                     EXX      
+409F   08                     EX   af,af'   
+40A0                             ;all set enable interrupt and return to last saved program counter
+40A0   00                     NOP      
+40A1   00                     NOP      
+40A2   00                     NOP      
+40A3   00                     NOP      
+40A4   00                     NOP      
+40A5   00                     NOP      
+40A6   FB                     EI      
+40A7   ED 4D                  RETI      
+40A9                             ; Menu Configuration for Task Selection
+40A9                MENUCFG:      
+40A9   05                     DB   5   ;Number of menu items
+40AA   4D 54 41 53 4B 53      DB   "MTASKS"   ;Menu Title
+40B0   53 65 6C 65 63 74 20 54 61 73 6B 73 20 74 6F 20 52 75 6E 00 DB   "Select Tasks to Run",0   
+40C4   53 74 61 72 74 20 4D 75 6C 74 69 74 61 73 6B 69 6E 67 00 DB   "Start Multitasking",0   
+40D7   18 40                  DW   startMultitask   
+40D9   53 65 76 65 6E 20 53 65 67 6D 65 6E 74 20 44 65 6D 6F 00 DB   "Seven Segment Demo",0   
+40EC   26 41                  DW   registerSD   
+40EE   38 78 38 20 4D 61 74 72 69 78 20 44 65 6D 6F 00 DB   "8x8 Matrix Demo",0   
+40FE   2D 41                  DW   registerMD   
+4100   47 4C 43 44 20 46 6F 6E 74 20 44 65 6D 6F 00 DB   "GLCD Font Demo",0   
+410F   34 41                  DW   registerFD   
+4111   4C 43 44 20 50 61 72 74 69 63 6C 65 20 53 69 6D 2E 00 DB   "LCD Particle Sim.",0   
+4123   3B 41                  DW   registerPD   
+4125   00                     DB   0   
+4126                             ;Register Task Routines
+4126                REGISTERSD:      
+4126                          ;*Macro unroll:  regTask task1, 0
+4126                TASK1_RAM:   EQU   1000h + (0 * 100h)   
+4126   11 00 50               LD   de,task1   
+4129   CD 2F 40               CALL   registerTask   
+412C   C9                     RET      
+412D                REGISTERMD:      
+412D                          ;*Macro unroll:  regTask task2, 1
+412D                TASK2_RAM:   EQU   1000h + (1 * 100h)   
+412D   11 00 51               LD   de,task2   
+4130   CD 2F 40               CALL   registerTask   
+4133   C9                     RET      
+4134                REGISTERFD:      
+4134                          ;*Macro unroll:  regTask task3, 2
+4134                TASK3_RAM:   EQU   1000h + (2 * 100h)   
+4134   11 DD 53               LD   de,task3   
+4137   CD 2F 40               CALL   registerTask   
+413A   C9                     RET      
+413B                REGISTERPD:      
+413B                          ;*Macro unroll:  regTask task4, 3
+413B                TASK4_RAM:   EQU   1000h + (3 * 100h)   
+413B   11 00 55               LD   de,task4   
+413E   CD 2F 40               CALL   registerTask   
+4141   C9                     RET      
+4142                             ; Tasks below are simple looping routines that show output on the seven segments,
+4142                             ; LCD, GLCD and 8x8 Matrix screens.
+4142                             ;Task #1 - Seven Segment Loop
+5000                          .ORG   5000h   
+5000                SEGCTRL:   EQU   01h   ; Control to 7-segment display
+5000                SEGDATA:   EQU   02h   ; Data to 7-segment display
+5000                TASK1:       
+5000   3E 01                  LD   a,01h   
+5002   D3 02                  OUT   (SEGDATA),a   
+5004   3E 01                  LD   a,01h   
+5006                TASK1_LOOP1:      
+5006   D3 01                  OUT   (SEGCTRL),a   
+5008   CD 3E 50               CALL   task1_delay   
+500B   CB 07                  RLC   a   
+500D   FE 40                  CP   40h   
+500F   20 F5                  JR   nz,task1_loop1   
+5011   3E 02                  LD   a,02h   
+5013   D3 02                  OUT   (SEGDATA),a   
+5015   CD 3E 50               CALL   task1_delay   
+5018   3E 40                  LD   a,40h   
+501A   D3 02                  OUT   (SEGDATA),a   
+501C   CD 3E 50               CALL   task1_delay   
+501F   3E 80                  LD   a,80h   
+5021   D3 02                  OUT   (SEGDATA),a   
+5023   3E 20                  LD   a,20h   
+5025                TASK1_LOOP2:      
+5025   D3 01                  OUT   (SEGCTRL),a   
+5027   CD 3E 50               CALL   task1_delay   
+502A   CB 0F                  RRC   a   
+502C   30 F7                  JR   nc,task1_loop2   
+502E   3E 20                  LD   a,20h   
+5030   D3 02                  OUT   (SEGDATA),a   
+5032   CD 3E 50               CALL   task1_delay   
+5035   3E 08                  LD   a,08h   
+5037   D3 02                  OUT   (SEGDATA),a   
+5039   CD 3E 50               CALL   task1_delay   
+503C   18 C2                  JR   task1   
+503E                TASK1_DELAY:      
+503E   C5                     PUSH   bc   
+503F   06 20                  LD   b,20h   
+5041                D1:          
+5041   0E FF                  LD   c,0FFh   
+5043                D2:          
+5043   0D                     DEC   c   
+5044   20 FD                  JR   nz,d2   
+5046   10 F9                  DJNZ   d1   
+5048   C1                     POP   bc   
+5049   C9                     RET      
+504A                             ;Task 2 - 8x8 Matrix Fan Out
+5100                          .ORG   5100h   
+5100                TASK2:       
+5100   21 12 51               LD   hl,task2_data   
+5103   06 0C                  LD   b,0Ch   
+5105                TASK2_LOOP:      
+5105   7E                     LD   a,(hl)   
+5106   D3 05                  OUT   (05),a   
+5108   D3 06                  OUT   (06),a   
+510A   23                     INC   hl   
+510B   CD 3E 50               CALL   task1_delay   
+510E   10 F5                  DJNZ   task2_loop   
+5110   18 EE                  JR   task2   
+5112                TASK2_DATA:      
+5112   18 3C 7E FF E7 C3      DB   18h,3Ch,7Eh,0FFh,0E7h,0C3h   
+5118   81 C3 E7 FF 7E 3C      DB   81h,0C3h,0E7h,0FFh,7Eh,3Ch   
+511E                             ;Task 3 - GLCD Font Demo
+53DD                          .ORG   53ddh   
+53DD                TASK3:       
+53DD   3E 00 DF 3E 05 DF 3E 0D DB   3EH,00H,0DFH,3EH,05H,0DFH,3EH,0DH   
+53E5   DF 20 50 72 65 73 73 20 41 6E 79 20 4B 65 79 00 DB   0DFH," Press Any Key",00H   
+53F5   0E 00 CF 06 40 3E 80 CD DB   0EH,00H,0CFH,06H,40H,3EH,80H,0CDH   
+53FD   24 54 79 CD 28 54 0C CB DB   24H,54H,79H,0CDH,28H,54H,0CH,0CBH   
+5405   79 20 04 10 F5 18 EB 21 DB   79H,20H,04H,10H,0F5H,18H,0EBH,21H   
+540D   40 A1 CF 06 20 3E 80 CD DB   40H,0A1H,0CFH,06H,20H,3EH,80H,0CDH   
+5415   24 54 7C CD 28 54 7D CD DB   24H,54H,7CH,0CDH,28H,54H,7DH,0CDH   
+541D   28 54 23 10 F5 18 EB D3 DB   28H,54H,23H,10H,0F5H,18H,0EBH,0D3H   
+5425   07 18 02 D3 87 3E 0F DF DB   07H,18H,02H,0D3H,87H,3EH,0FH,0DFH   
+542D   C9                     DB   0C9H   
+542E                             ;LCD Particle Simulation
+542E                             ;-----------------------
+542E                             ;The Code should be straight forward to follow.  It can be adapted to your own Z80
+542E                             ;by changing some of the constants below.
+542E                             ;NOTE: RST 30H on BMON does a check for LCD Busy.  Here is the code. Replace RST 30
+542E                             ;with the following if not using BMON.
+542E                             ; IE: do a "CALL RST30"
+542E                             ;RST 30 (F7)
+542E                             ;TEST THE BUSY STATE OF THE LCD AND LOOP WHILE BUSY
+542E                             ; RST30:      IN      A, (LCD_IR)                         ;READ STATUS BIT FROM LCD
+542E                             ;             RLCA                                        ;PUT IN CARRY
+542E                             ;             JR      C, RST30                            ;LOOP IF LCD BUSY
+542E                             ;             RET                                         ;DONE
+5500                          .ORG   5500H   
+5500                TASK4:       
+5500                             ;Port 4 on TEC is connected to LCD Enable
+5500                             ;A7 is connected to  Register select.  A7=0 for Instruction, A7=1 for Data
+5500                LCD_IR:   EQU   00000100B   
+5500                LCD_DR:   EQU   10000100B   ;A7 is Data Register
+5500                BALLLST:   EQU   TASK4_RAM   ;Active Balls in RAM
+5500                ROW1:     EQU   80H   ;LCD DDRAM Row 1 Start Address
+5500                ROW2:     EQU   0C0H   ;LCD DDRAM Row 2 Start Address
+5500                ROW3:     EQU   94H   ;LCD DDRAM Row 3 Start Address
+5500                ROW4:     EQU   0D4H   ;LCD DDRAM Row 4 Start Address
+5500                MAXCOL:   EQU   100   ;Max Columns
+5500                MAXROW:   EQU   32   ;Max Rows
+5500                BALL:     EQU   6FH   ;Ball shape "o"
+5500                             ; LCD set up
+5500   EF                     RST   28H   ;Check for LCD Busy
+5501   3E 01                  LD   A,01H   ;Display Clear
+5503   D3 04                  OUT   (LCD_IR),A   ;Send to Instruction Register (IR)
+5505   EF                     RST   28H   ;Check for LCD Busy
+5506   3E 06                  LD   A,06H   ;Increment Cursor from Left to Right
+5508   D3 04                  OUT   (LCD_IR),A   ;Send to Instruction Register (IR)
+550A   EF                     RST   28H   ;Check for LCD Busy
+550B                             ; Load Any Customer LCD Characters
+550B   CD 2D 56               CALL   LOADCHARS   
+550E                LOADBALLS:      
+550E                             ;Load Default Balls to RAM
+550E   21 82 56               LD   HL,BALLS   ;Get Ball Data
+5511   11 00 13               LD   DE,BALLLST   ;Get Ball RAM address
+5514                L1:          
+5514   ED A0                  LDI      
+5516   7E                     LD   A,(HL)   ;Check for
+5517   FE FF                  CP   0FFH   ;End of List
+5519   20 F9                  JR   NZ,L1   
+551B   12                     LD   (DE),A   ;Save FF
+551C                             ;DRAW/MOVE Loop.
+551C                             ;Graphical engines have a Draw/Move cycle.  Draw the Screen, and Move the data for the screen.
+551C                             ;Also do a keyboard check if needed in the Move.  This is fairly typical.
+551C                DRAW:        
+551C   21 00 13               LD   HL,BALLLST   ;Get Ball list
+551F                DRAW1:       
+551F   46                     LD   B,(HL)   ;Load Position X and Positino Y into BC
+5520   23                     INC   HL   
+5521   4E                     LD   C,(HL)   
+5522   23                     INC   HL   
+5523   23                     INC   HL   
+5524   23                     INC   HL   
+5525   23                     INC   HL   
+5526   23                     INC   HL   
+5527   56                     LD   D,(HL)   ;Load Ball ASCII character into D
+5528   CD 02 56               CALL   DRAWLCD   ;Draw Ball on LCD
+552B   23                     INC   HL   ;Move to next Ball
+552C   7E                     LD   A,(HL)   
+552D   FE FF                  CP   0FFH   ;End of List
+552F   20 EE                  JR   NZ,DRAW1   
+5531                             ;Ball Automatic Movement with Velocity.  Use IX regitster to easlier index Ball Table
+5531                             ;IX+0 = Pos X, IX+1 = Pox Y, IX+2 = Vel X, IX+3 = Vel Y, IX+4 = Accel, IX+5 = Accel Timer
+5531                MOVE:        
+5531   DD 21 00 13            LD   IX,BALLLST   ;Link IX to Ball List
+5535                M1:          
+5535   DD 7E 00               LD   A,(IX+0)   ;Check if End of List
+5538   FE FF                  CP   0FFH   ; 
+553A   28 E0                  JR   Z,DRAW   ;Yes, Move is over, Loop Back to Draw
+553C                             ;Decrease Timer, if zero, add velocity to position
+553C   DD 7E 05               LD   A,(IX+5)   ;Get Accelleration Timer
+553F   B7                     OR   A   ;Is it zero?
+5540   28 16                  JR   Z,M3   ;Yes, Add Velocity, reset timer
+5542   DD 35 05               DEC   (IX+5)   ;Decrease Timer
+5545   18 0A                  JR   SKIPMOVE   ;No Blanking needed as Ball didn't move
+5547                M2:          ;Clear Prevous Ball, Move IX to next Ball and process next ball
+5547   D5                     PUSH   DE   ;Copy DE into
+5548   C1                     POP   BC   ;BC
+5549   16 20                  LD   D,20H   ;Load D as Space
+554B   CD 02 56               CALL   DRAWLCD   ;Clear out previous square
+554E   CD AE 55               CALL   COLLISION   ;A Ball has moved, check for Ball Collisions
+5551                SKIPMOVE:      
+5551   01 07 00               LD   BC,07H   ;Next Ball Index
+5554   DD 09                  ADD   IX,BC   ;Move IX to next Ball
+5556   18 DD                  JR   M1   ;Process Next Ball
+5558                M3:          ;Add Velocity to Ball Position. If out of Bounds, reverse velocity, reset timer
+5558                             ;Update X Position
+5558   DD 7E 02               LD   A,(IX+2)   ;Get Velocity X
+555B   D6 04                  SUB   04H   ;Normalise Velocity
+555D   47                     LD   B,A   ;Save in B
+555E   DD 7E 00               LD   A,(IX+0)   ;Get Position X
+5561   80                     ADD   A,B   ;Update Position X
+5562   28 03                  JR   Z,M4   ;Zero, Invert X
+5564   F2 73 55               JP   P,M5   ;Not Negative, Check for carry
+5567                M4:          ;Invert X Velocity to Bounce off Wall
+5567   DD 7E 02               LD   A,(IX+2)   ;Get Velocity X
+556A   ED 44                  NEG      ;Get 2s Compliment
+556C   E6 07                  AND   07H   ;Mask out irrelevant bits
+556E   DD 77 02               LD   (IX+2),A   ;Store updated X Velocity
+5571   18 E5                  JR   M3   ;Try Move Again
+5573                M5:          ;Check to see if X > MAXCOL
+5573   FE 64                  CP   MAXCOL   ;Is it Greater than
+5575   38 02                  JR   C,M6   ;MAX COL, No if Carry Set
+5577   20 EE                  JR   NZ,M4   ;Or Zero Set
+5579                M6:          ;All Good, update X Pos
+5579   DD 56 00               LD   D,(IX+0)   ;Save Previous X Pos
+557C   DD 77 00               LD   (IX+0),A   ;Save New Pos X
+557F                M7:          ;Update Y Position
+557F   DD 7E 03               LD   A,(IX+3)   ;Get Velocity Y
+5582   D6 04                  SUB   04H   ;Normalise Velocity
+5584   47                     LD   B,A   ;Save in B
+5585   DD 7E 01               LD   A,(IX+1)   ;Get Position Y
+5588   80                     ADD   A,B   ;Update Position Y
+5589   28 03                  JR   Z,M8   ;Zero, Invert Y
+558B   F2 9A 55               JP   P,M9   ;Not Negative, Check for carry
+558E                M8:          ;Invert Y Velocity to Bounce off Wall
+558E   DD 7E 03               LD   A,(IX+3)   ;Get Velocity Y
+5591   ED 44                  NEG      ;Get 2s Compliment
+5593   E6 07                  AND   07H   ;Mask out irrelevant bits
+5595   DD 77 03               LD   (IX+3),A   ;Store updated Y Velocity
+5598   18 E5                  JR   M7   ;Try Move Again
+559A                M9:          ;Check to see if Y > MAXROW
+559A   FE 20                  CP   MAXROW   ;Is it Greater than
+559C   38 02                  JR   C,M10   ;MAX ROW, No if Carry Set
+559E   20 EE                  JR   NZ,M8   ;Or Zero Set
+55A0                M10:         ;All Good, update Y Pos
+55A0   DD 5E 01               LD   E,(IX+1)   ;Save Previous Y Pos
+55A3   DD 77 01               LD   (IX+1),A   ;Save New Pos Y
+55A6                M11:         ;Reset Timer
+55A6   DD 7E 04               LD   A,(IX+4)   ;Get Accelleration
+55A9   DD 77 05               LD   (IX+5),A   ;Reset Timer
+55AC   18 99                  JR   M2   ;Get Next Ball
+55AE                             ; Find Coliding Pairs
+55AE                             ; Start at BALLLST, interate through all balls.   Compare Balls X,Y position.  If they
+55AE                             ; occupy the same LCD Charater spot, Bounce balls off eachother.  Only compare balls
+55AE                             ; that haven't been previously compared.
+55AE                             ; The Elastic Physics is simpla as I assue all balls are the same Mass.  I calculate the
+55AE                             ; Kinetic Energy between the two velocies, then subtract this from Ball 1 and Add it to
+55AE                             ; Ball two
+55AE                             ; 
+55AE                             ; Kerg = Ball_1.vel - Ball_2.vel
+55AE                             ; Ball_1.vel -= Kerg
+55AE                             ; Ball_2.vel += Kerg
+55AE                             ; 
+55AE                COLLISION:      
+55AE   FD 21 00 13            LD   IY,BALLLST   ;Get Ball list
+55B2                C0:          
+55B2   FD E5                  PUSH   IY   ;Ball 1
+55B4   DD E1                  POP   IX   ;Ball 2
+55B6                C1:          
+55B6   DD 7E 07               LD   A,(IX+7)   ;Get Next Ball 2
+55B9   FE FF                  CP   0FFH   ;Is it the End of List?
+55BB   28 38                  JR   Z,C3   ;Yes, Get Next Ball 1
+55BD   01 07 00               LD   BC,0007H   ;Move IX to next Ball 2
+55C0   DD 09                  ADD   IX,BC   
+55C2   DD 46 00               LD   B,(IX+0)   ;Get Ball 2 Position X
+55C5   DD 4E 01               LD   C,(IX+1)   ;Get Ball 2 Position Y
+55C8   CD 17 56               CALL   PIXEL2CHAR   ;Convert to LCD Character Space
+55CB   C5                     PUSH   BC   ;Save in HL
+55CC   E1                     POP   HL   
+55CD   FD 46 00               LD   B,(IY+0)   ;Get Ball 1 Position X
+55D0   FD 4E 01               LD   C,(IY+1)   ;Get Ball 1 Position Y
+55D3   CD 17 56               CALL   PIXEL2CHAR   ;Convert to LCD Character Space
+55D6   B7                     OR   A   ;Reset Carry flag, so SBC = SUB
+55D7   ED 42                  SBC   HL,BC   ;Check to see if in same LCD Space
+55D9   28 02                  JR   Z,MATCH   ;Yes, Jump to Bounce Routine
+55DB   18 D9                  JR   C1   ;No, Get Next Ball 2
+55DD                             ;Change Ball Velocities based on Elastic Collision formula.  The commented out section
+55DD                             ;Does the basic forumlar above.  But with equal Mass and no Friction, just swap the
+55DD                             ;velocities of each ball...
+55DD                MATCH:       
+55DD                             ;Calcultate Kinetic Energy between balls
+55DD                             ; LD     A,(IY+2)         ;Get Ball 1 Vx
+55DD                             ; LD     B,(IX+2)         ;Get Ball 2 Vx
+55DD                             ; SUB    B                ;B1.vx - B2.vx
+55DD                             ; LD     B,A              ;Save in B (Kine X)
+55DD                             ; LD     A,(IY+3)         ;Get Ball 1 Vy
+55DD                             ; LD     C,(IX+3)         ;Get Ball 2 Vy
+55DD                             ; SUB    C                ;B1.vy - B2.vy
+55DD                             ; LD     C,A              ;Save in C (Kine Y)
+55DD                             ;Subtract Kinetic Energy from Ball 1
+55DD                             ; LD     A,(IY+2)         ;Get Ball 1 Vx
+55DD                             ; SUB    B                ;B1.Vx - KineX
+55DD                             ; LD     (IY+2),A         ;Save new Ball 1 Vx
+55DD                             ; LD     A,(IY+3)         ;Get Ball 1 Vy
+55DD                             ; SUB    C                ;B1.Vy - KineY
+55DD                             ; LD     (IY+3),A         ;Save Ball 1 Vy
+55DD                             ;Add Kinetic Energy from Ball 2
+55DD                             ; LD     A,(IX+2)         ;Get Ball 2 Vx
+55DD                             ; ADD    A,B              ;B2.Vx + KineX
+55DD                             ; LD     (IX+2),A         ;Save Ball 2 Vx
+55DD                             ; LD     A,(IX+3)         ;Get Ball 2 Vy
+55DD                             ; ADD    A,C              ;B2.Vy + KineY
+55DD                             ; LD     (IX+3),A         ;Save Ball 2 Vy
+55DD                             ;IY = Ball 1, IX = Ball 2
+55DD                             ;Interchange Ball 1 Velocity with Ball 2 Velocity
+55DD   FD 7E 02               LD   A,(IY+2)   ;Get Ball 1 Vx
+55E0   DD 46 02               LD   B,(IX+2)   ;Get Ball 2 Vx
+55E3   FD 70 02               LD   (IY+2),B   ;Save Ball 2 Vx to Ball 1 Vx
+55E6   DD 77 02               LD   (IX+2),A   ;Save Ball 1 Vx to Ball 2 Vx
+55E9   FD 7E 03               LD   A,(IY+3)   ;Get Ball 1 Vy
+55EC   DD 46 03               LD   B,(IX+3)   ;Get Ball 2 Vy
+55EF   FD 70 03               LD   (IY+3),B   ;Save Ball 2 Vy to Ball 1 Vy
+55F2   DD 77 03               LD   (IX+3),A   ;Save Ball 1 Vy to Ball 2 Vy
+55F5                             ;Get Next Ball 1
+55F5                C3:          
+55F5   01 07 00               LD   BC,0007H   ;Move IY to next Ball 1
+55F8   FD 09                  ADD   IY,BC   
+55FA   FD 7E 07               LD   A,(IY+7)   ;Check if on Last Ball
+55FD   FE FF                  CP   0FFH   ; 
+55FF   20 B1                  JR   NZ,C0   ;No, Repeat Collision for next Ball
+5601                             ;Yes, Skip last ball as its already
+5601                             ;been compared already
+5601   C9                     RET      ;Continue with DRAW/MOVE Loop
+5602                             ;Draw a character on the LCD.  Converts LCD Pixel to 20x4 Character.  Places Ball on Character
+5602                             ;Entry:
+5602                             ;   B = X-coordinate (00H-64H)
+5602                             ;   C = Y-coordinate (00H-20H)
+5602                             ;   D = Ball ASCII value
+5602                             ;Exit:
+5602                             ;   A corrupt
+5602                DRAWLCD:      
+5602   E5                     PUSH   HL   
+5603   EF                     RST   28H   ;Check for LCD Busy
+5604                             ;Convert Pixels to Character
+5604   CD 17 56               CALL   PIXEL2CHAR   
+5607                             ;Get Rows
+5607   79                     LD   A,C   
+5608   21 3E 56               LD   HL,LCDROWS   
+560B   85                     ADD   A,L   
+560C   6F                     LD   L,A   
+560D   7E                     LD   A,(HL)   
+560E                             ;Get Column
+560E   80                     ADD   A,B   
+560F                             ;Set cursor to BC coordinate
+560F   D3 04                  OUT   (LCD_IR),A   ;Send to Instruction Register (IR)
+5611                             ;Draw Ball
+5611   EF                     RST   28H   ;Check for LCD Busy
+5612   7A                     LD   A,D   
+5613   D3 84                  OUT   (LCD_DR),A   ;Draw Ball
+5615   E1                     POP   HL   
+5616   C9                     RET      
+5617                             ;Converts Pixel Space to Character Space.  There are 100 Pixels for 20 Characters across and
+5617                             ;32 Pixels for 4 Characters Down.
+5617                             ;Entry:
+5617                             ;   B = X-coordinate (00H-64H)
+5617                             ;   C = Y-coordinate (00H-20H)
+5617                             ;Exit:
+5617                             ;   BC = Character Space
+5617                PIXEL2CHAR:      
+5617   78                     LD   A,B   ;Store X in A
+5618   1E 05                  LD   E,05H   ;Five Pixels across
+561A   06 FF                  LD   B,0FFH   ;Clear B
+561C                PC1:         
+561C   04                     INC   B   ;Count Characters
+561D   93                     SUB   E   ;Check for zero
+561E   38 02                  JR   C,PC2   ;or
+5620   20 FA                  JR   NZ,PC1   ;carry
+5622                PC2:         
+5622   79                     LD   A,C   ;Store Y in A
+5623   1E 08                  LD   E,08H   ;Eight Pixels down
+5625   0E FF                  LD   C,0FFH   ;Clear C
+5627                PC3:         
+5627   0C                     INC   C   ;Count Characters
+5628   93                     SUB   E   ;Check for zero
+5629   D8                     RET   C   ;or
+562A   20 FB                  JR   NZ,PC3   ;carry
+562C   C9                     RET      
+562D                             ;Load Custom LCD Characters to the CGRAM.  Only Eight can be used at once and reference them
+562D                             ;from 0-7.
+562D                LOADCHARS:      
+562D                             ; Tell the LCD that next data will be to CGRAM
+562D   EF                     RST   28H   ;Check for LCD Busy
+562E   3E 40                  LD   A,40H   ;CGRAM entry
+5630   D3 04                  OUT   (LCD_IR),A   ;Send to Instruction Register (IR)
+5632                             ; Save multiple characters to CGRAM using lookup table and OUTI
+5632   01 84 40               LD   BC,4000H | LCD_DR   ;B=40/8 (letters), C=84 (port number)
+5635   21 42 56               LD   HL,LCDCHARS   ;LCD table lookup
+5638                LC1:         
+5638   EF                     RST   28H   ;Check for LCD Busy
+5639   ED A3                  OUTI      ;Send (HL) to port C, Decrement B, Increment HL
+563B   20 FB                  JR   NZ,LC1   ;OUTI sets zero if B=0;
+563D   C9                     RET      
+563E                             ;Balls Table, 6 Bytes per ball, End with FF.  Velocity is a range from 1 to 7 where,
+563E                             ;1 is fast nagative, 4 is stationary and 7 is fast positive.
+563E                             ;   Byte 1,2: Start X (1 - MAXCOL), Start Y (1 - MAXROW)
+563E                             ;   Byte 3,4: Velocity Vector X (1 - 7), Vector Y (1 - 7)
+563E                             ;   Byte 5:   Current Accelleration (00 = Fast to 80 = Slow)
+563E                             ;   Byte 6:   Accelleration Timer (Initially set to 0)
+563E                             ;   Byte 7:   Ball shape DDRAM/CGRAM ASCII Value
+563E                LCDROWS:      
+563E   80 C0 94 D4            DB   ROW1,ROW2,ROW3,ROW4   
+5642                LCDCHARS:      
+5642   00 0A 1F 1F 0E 04 00 00 DB   00H,0AH,1FH,1FH,0EH,04H,00H,00H   ;Heart
+564A   04 0E 0E 0E 1F 00 04 00 DB   04H,0EH,0EH,0EH,1FH,00H,04H,00H   ;Bell
+5652   1F 15 1F 1F 0E 0A 1B 00 DB   1FH,15H,1FH,1FH,0EH,0AH,1BH,00H   ;Alien
+565A   00 0E 1B 11 11 1B 0E 00 DB   00H,0EH,1BH,11H,11H,1BH,0EH,00H   ;Ball
+5662   01 03 0F 0F 0F 03 01 00 DB   01H,03H,0FH,0FH,0FH,03H,01H,00H   ;Speaker
+566A   01 03 05 09 09 0B 1B 18 DB   01H,03H,05H,09H,09H,0BH,1BH,18H   ;Sound
+5672   00 0E 15 1B 0E 0E 00 00 DB   00H,0EH,15H,1BH,0EH,0EH,00H,00H   ;Skull
+567A   0E 11 11 1F 1B 1B 1F 00 DB   0EH,11H,11H,1FH,1BH,1BH,1FH,00H   ;Lock
+5682                             ;Initial Ball Setup
+5682                BALLS:       
+5682   01 01 06 04 60 00 00   DB   01H,01H,06H,04H,60H,00H,00H   
+5689   63 01 02 04 60 00 01   DB   63H,01H,02H,04H,60H,00H,01H   
+5690   33 15 07 07 60 00 02   DB   33H,15H,07H,07H,60H,00H,02H   
+5697   60 09 02 06 60 00 03   DB   60H,09H,02H,06H,60H,00H,03H   
+569E   34 18 03 03 60 00 04   DB   34H,18H,03H,03H,60H,00H,04H   
+56A5   20 1A 06 01 60 00 05   DB   20H,1AH,06H,01H,60H,00H,05H   
+56AC   40 10 02 04 60 00 06   DB   40H,10H,02H,04H,60H,00H,06H   
+56B3   30 0D 01 03 60 00 07 FF DB   30H,0DH,01H,03H,60H,00H,07H,0FFH   
+
+
+TK_STACKS:          2000 DEFINED AT LINE 25
+                    > USED AT LINE 79
+TK_SPS:             3000 DEFINED AT LINE 26
+                    > USED AT LINE 46
+                    > USED AT LINE 47
+                    > USED AT LINE 59
+                    > USED AT LINE 69
+                    > USED AT LINE 114
+                    > USED AT LINE 160
+TK_CURRENT:         3020 DEFINED AT LINE 27
+                    > USED AT LINE 60
+                    > USED AT LINE 148
+                    > USED AT LINE 162
+TK_COUNTER:         3022 DEFINED AT LINE 28
+                    > USED AT LINE 43
+                    > USED AT LINE 80
+                    > USED AT LINE 121
+START:              4000 DEFINED AT LINE 39
+STARTMULTITASK:     4018 DEFINED AT LINE 57
+                    > USED AT LINE 198
+REGISTERTASK:       402F DEFINED AT LINE 78
+                    > USED AT LINE 35
+                    > USED AT LINE 35
+                    > USED AT LINE 35
+                    > USED AT LINE 35
+RT1:                4043 DEFINED AT LINE 93
+                    > USED AT LINE 91
+SAVESTACK:          4057 DEFINED AT LINE 112
+                    > USED AT LINE 100
+TASKSWAPPER:        4066 DEFINED AT LINE 131
+                    > USED AT LINE 65
+ST1:                408A DEFINED AT LINE 161
+                    > USED AT LINE 159
+MENUCFG:            40A9 DEFINED AT LINE 193
+                    > USED AT LINE 53
+REGISTERSD:         4126 DEFINED AT LINE 210
+                    > USED AT LINE 200
+TASK1_RAM:          1000 DEFINED AT LINE 33
+REGISTERMD:         412D DEFINED AT LINE 213
+                    > USED AT LINE 202
+TASK2_RAM:          1100 DEFINED AT LINE 33
+REGISTERFD:         4134 DEFINED AT LINE 216
+                    > USED AT LINE 204
+TASK3_RAM:          1200 DEFINED AT LINE 33
+REGISTERPD:         413B DEFINED AT LINE 219
+                    > USED AT LINE 206
+TASK4_RAM:          1300 DEFINED AT LINE 33
+                    > USED AT LINE 328
+SEGCTRL:            0001 DEFINED AT LINE 228
+                    > USED AT LINE 236
+                    > USED AT LINE 251
+SEGDATA:            0002 DEFINED AT LINE 229
+                    > USED AT LINE 233
+                    > USED AT LINE 242
+                    > USED AT LINE 245
+                    > USED AT LINE 248
+                    > USED AT LINE 256
+                    > USED AT LINE 259
+TASK1:              5000 DEFINED AT LINE 231
+                    > USED AT LINE 34
+                    > USED AT LINE 261
+TASK1_LOOP1:        5006 DEFINED AT LINE 235
+                    > USED AT LINE 240
+TASK1_LOOP2:        5025 DEFINED AT LINE 250
+                    > USED AT LINE 254
+TASK1_DELAY:        503E DEFINED AT LINE 262
+                    > USED AT LINE 237
+                    > USED AT LINE 243
+                    > USED AT LINE 246
+                    > USED AT LINE 252
+                    > USED AT LINE 257
+                    > USED AT LINE 260
+                    > USED AT LINE 284
+D1:                 5041 DEFINED AT LINE 265
+                    > USED AT LINE 270
+D2:                 5043 DEFINED AT LINE 267
+                    > USED AT LINE 269
+TASK2:              5100 DEFINED AT LINE 276
+                    > USED AT LINE 34
+                    > USED AT LINE 286
+TASK2_LOOP:         5105 DEFINED AT LINE 279
+                    > USED AT LINE 285
+TASK2_DATA:         5112 DEFINED AT LINE 287
+                    > USED AT LINE 277
+TASK3:              53DD DEFINED AT LINE 293
+                    > USED AT LINE 34
+TASK4:              5500 DEFINED AT LINE 322
+                    > USED AT LINE 34
+LCD_IR:             0004 DEFINED AT LINE 326
+                    > USED AT LINE 341
+                    > USED AT LINE 344
+                    > USED AT LINE 569
+                    > USED AT LINE 610
+LCD_DR:             0084 DEFINED AT LINE 327
+                    > USED AT LINE 573
+                    > USED AT LINE 613
+BALLLST:            1300 DEFINED AT LINE 328
+                    > USED AT LINE 353
+                    > USED AT LINE 365
+                    > USED AT LINE 388
+                    > USED AT LINE 471
+ROW1:               0080 DEFINED AT LINE 329
+                    > USED AT LINE 629
+ROW2:               00C0 DEFINED AT LINE 330
+                    > USED AT LINE 629
+ROW3:               0094 DEFINED AT LINE 331
+ROW4:               00D4 DEFINED AT LINE 332
+MAXCOL:             0064 DEFINED AT LINE 333
+                    > USED AT LINE 426
+MAXROW:             0020 DEFINED AT LINE 334
+                    > USED AT LINE 447
+BALL:               006F DEFINED AT LINE 335
+LOADBALLS:          550E DEFINED AT LINE 350
+L1:                 5514 DEFINED AT LINE 354
+                    > USED AT LINE 358
+DRAW:               551C DEFINED AT LINE 364
+                    > USED AT LINE 392
+DRAW1:              551F DEFINED AT LINE 366
+                    > USED AT LINE 382
+MOVE:               5531 DEFINED AT LINE 387
+M1:                 5535 DEFINED AT LINE 389
+                    > USED AT LINE 409
+M2:                 5547 DEFINED AT LINE 399
+                    > USED AT LINE 456
+SKIPMOVE:           5551 DEFINED AT LINE 406
+                    > USED AT LINE 398
+M3:                 5558 DEFINED AT LINE 410
+                    > USED AT LINE 396
+                    > USED AT LINE 424
+M4:                 5567 DEFINED AT LINE 419
+                    > USED AT LINE 417
+                    > USED AT LINE 428
+M5:                 5573 DEFINED AT LINE 425
+                    > USED AT LINE 418
+M6:                 5579 DEFINED AT LINE 429
+                    > USED AT LINE 427
+M7:                 557F DEFINED AT LINE 432
+                    > USED AT LINE 445
+M8:                 558E DEFINED AT LINE 440
+                    > USED AT LINE 438
+                    > USED AT LINE 449
+M9:                 559A DEFINED AT LINE 446
+                    > USED AT LINE 439
+M10:                55A0 DEFINED AT LINE 450
+                    > USED AT LINE 448
+M11:                55A6 DEFINED AT LINE 453
+COLLISION:          55AE DEFINED AT LINE 470
+                    > USED AT LINE 404
+C0:                 55B2 DEFINED AT LINE 472
+                    > USED AT LINE 542
+C1:                 55B6 DEFINED AT LINE 475
+                    > USED AT LINE 493
+MATCH:              55DD DEFINED AT LINE 497
+                    > USED AT LINE 492
+C3:                 55F5 DEFINED AT LINE 537
+                    > USED AT LINE 478
+DRAWLCD:            5602 DEFINED AT LINE 555
+                    > USED AT LINE 377
+                    > USED AT LINE 403
+PIXEL2CHAR:         5617 DEFINED AT LINE 584
+                    > USED AT LINE 484
+                    > USED AT LINE 489
+                    > USED AT LINE 559
+PC1:                561C DEFINED AT LINE 588
+                    > USED AT LINE 592
+PC2:                5622 DEFINED AT LINE 593
+                    > USED AT LINE 591
+PC3:                5627 DEFINED AT LINE 597
+                    > USED AT LINE 601
+LOADCHARS:          562D DEFINED AT LINE 606
+                    > USED AT LINE 348
+LC1:                5638 DEFINED AT LINE 615
+                    > USED AT LINE 618
+LCDROWS:            563E DEFINED AT LINE 628
+                    > USED AT LINE 562
+LCDCHARS:           5642 DEFINED AT LINE 630
+                    > USED AT LINE 614
+BALLS:              5682 DEFINED AT LINE 640
+                    > USED AT LINE 352

@@ -1,0 +1,648 @@
+;------------------------------------------
+; Pre-emptive Multitasking Simulator
+;------------------------------------------
+;
+; This "Proof of concept" program simulates task multitasking that can run up
+; to eight separate tasks at the same time.  When the CPU triggers an interrupt,
+; CPU registers are saved onto the task's stack, then the next task stack is
+; swapped into the stack pointer.  The CPU registers are restored from the stack and
+; the Program Counter is resumed to the new task.
+;
+; This code does have limitation in particular the size of the task stacks and the number
+; of tasks.  Also, the more tasks loaded, the slower each task goes.  The task swapper
+; routine which is called when an interrupt happens is about 430 clock cycles.  Its the
+; smallest I can get it.  
+;
+; Interrupts are set at about 50Hz, but it can be lower.  A separate add-on board is 
+; required to be attached to the INT line which produces are square wave of about 50Hz
+; or less.
+;
+; This code is designed for the TEC-1G Z80 computer using Mon3 as the monitor.  The
+; Task Swapper routine is inserted into address 0892H which will be called when
+; an INT occurs.
+
+; RAM Constants
+TK_STACKS:  .equ    2000h       ;task stacks.  32 bytes each
+TK_SPS:     .equ    3000h       ;task stack addresses (max 8 tasks)
+TK_CURRENT: .equ    3020h       ;current stack address pointer
+TK_COUNTER: .equ    3022h       ;temp counter
+
+; Macro for task registration.  This macro registers a task into the task queue
+; and creates a unique label for task RAM usage. 
+.macro regTask, task, number
+        task_ram    .equ    1000h + (number * 100h)
+        ld de,task
+        call registerTask
+.endm
+
+        .org 4000h
+start:
+;Task Setup.  Create unique task stacks by adding the start address of each
+;task on the task stack and and pre-fill registers on the stack.
+        xor a
+        ld (TK_COUNTER),a           ;reset counter
+        ;initialize stack pointer list
+        ld a,0ffh
+        ld hl,TK_SPS
+        ld de,TK_SPS+1
+        ld (hl),a
+        ld bc,1fh
+        ldir
+        ;load the menu to select tasks to register
+        ld c,1FH                ;Mon3 Menu Driver
+        ld hl,menuCFG
+        rst 10H                 ;Launch the menu
+
+;Start Multitasking
+startMultitask:
+        ;initialise current stack pointer to point to the first task
+        ld de,TK_SPS
+        ld hl,TK_CURRENT
+        ld (hl),e
+        inc hl
+        ld (hl),d
+        ;set up mon3 interrupt mode 1
+        ld hl,taskSwapper
+        ld (0892H),hl
+        im 1
+        ;start first task and enable interrupts
+        ld sp,(TK_SPS)
+        ei          ;enable interrupts to start it off
+        ret         ;jump to first task.  PC stored on stack
+
+
+;Register Task.  This routine sets up a unique stack area for each task.  It places
+;the address of the task onto the stack.  This will be used to return back to the 
+;task when the task swapper exits.  Then the stack pointer is shifted down with
+;space for the registers.  Each stack will start with all registers at zero.
+registerTask:
+        ld hl,TK_STACKS
+        ld a,(TK_COUNTER)
+        add a,a         ;x2
+        ld b,a          ;save x2
+        add a,a         ;x4
+        add a,a         ;x8
+        add a,a         ;x16
+        add a,a         ;x32
+        neg
+        add a,l
+        ld l,a
+        push af
+        jr z,rt1        ;if first task ignore dec
+        dec h
+rt1:
+        ;save PC to stack
+        dec hl
+        ld (hl),d
+        dec hl
+        ld (hl),e
+        pop af
+        jr z,saveStack
+        ;fill AF,BC,DE,HL,IX,IY,'AF,'BC,'DE,'HL to zero
+        dec hl
+        xor a
+        ld (hl),a
+        ld de,hl
+        dec de
+        push bc
+        ld bc,20-1
+        lddr
+        pop bc
+        ;save stack to stack list
+saveStack:
+        ld a,b
+        ld de,TK_SPS
+        add a,e
+        ld e,a
+        ex de,hl
+        ld (hl),e
+        inc hl
+        ld (hl),d
+        ld hl,TK_COUNTER
+        inc (hl)
+        ret
+
+;Task Swapper.  This routine gets called on every interrupt.  It first
+;saves all register for the task onto the tasks stack.  Then it updates
+;the stack pointer value to the current task stack list.  Gets the next
+;task stack and finally pops all the registers off the new stack and 
+;returns.  This will restore the Program Counter to the line when the
+;interrupt occurred. 
+taskSwapper:
+        ;push all register onto the task stack (PC is already on stack)
+        ex af,af'
+        exx
+        push hl
+        push de
+        push bc
+        push af
+        exx
+        ex af,af'
+        push iy
+        push ix
+        push hl
+        push de
+        push bc
+        push af
+        ;save SP to current stack pointer address
+        ld de,(TK_CURRENT)
+        ld hl,0
+        add hl,sp
+        ex de,hl
+        ld (hl),e
+        inc hl
+        ld (hl),d
+        ;get next task stack
+        inc hl
+        ld a,(hl)
+        inc a
+        jr nz,st1           ;jump if not at end of list
+        ld hl,TK_SPS        ;default to start of list if at the end
+st1:
+        ld (TK_CURRENT),hl
+        ;set new stack pointer
+        ld sp,hl            ;do a ld sp,(hl) ; and save as stack pointer
+        pop hl
+        ld sp,hl
+        ;restore register for next task
+        pop af
+        pop bc
+        pop de
+        pop hl
+        pop ix
+        pop iy
+        exx
+        ex af,af'
+        pop af
+        pop bc
+        pop de
+        pop hl
+        exx
+        ex af,af'
+        ;all set enable interrupt and return to last saved program counter
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        ei
+        reti
+
+; Menu Configuration for Task Selection
+menuCFG:
+        .db 5               ;Number of menu items
+        .db "MTASKS"      ;Menu Title
+        .db "Select Tasks to Run",0
+        .db "Start Multitasking",0
+        .dw startMultitask
+        .db "Seven Segment Demo",0
+        .dw registerSD
+        .db "8x8 Matrix Demo",0
+        .dw registerMD
+        .db "GLCD Font Demo",0
+        .dw registerFD
+        .db "LCD Particle Sim.",0
+        .dw registerPD
+        .db 0
+
+;Register Task Routines
+registerSD:
+        regTask task1, 0
+        ret
+registerMD:
+        regTask task2, 1
+        ret
+registerFD:
+        regTask task3, 2
+        ret
+registerPD:
+        regTask task4, 3
+        ret
+
+; Tasks below are simple looping routines that show output on the seven segments,
+; LCD, GLCD and 8x8 Matrix screens.
+
+;Task #1 - Seven Segment Loop
+        .org 5000h
+SEGCTRL:    .equ 01h	; Control to 7-segment display
+SEGDATA:    .equ 02h	; Data to 7-segment display
+
+task1:
+        ld a,01h
+        out (SEGDATA),a
+        ld a,01h
+task1_loop1:
+        out (SEGCTRL),a
+        call task1_delay
+        rlc a
+        cp 40h
+        jr nz,task1_loop1
+        ld a,02h
+        out (SEGDATA),a
+        call task1_delay
+        ld a,40h
+        out (SEGDATA),a
+        call task1_delay
+        ld a,80h
+        out (SEGDATA),a
+        ld a,20h
+task1_loop2:
+        out (SEGCTRL),a
+        call task1_delay
+        rrc a
+        jr nc,task1_loop2
+        ld a,20h
+        out (SEGDATA),a
+        call task1_delay
+        ld a,08h
+        out (SEGDATA),a
+        call task1_delay
+        jr task1
+task1_delay:
+        push bc
+        ld b,20h
+d1:
+        ld c,0FFh
+d2:
+        dec c
+        jr nz,d2
+        djnz d1
+        pop bc
+        ret
+
+;Task 2 - 8x8 Matrix Fan Out
+        .org 5100h
+task2:
+        ld hl,task2_data
+        ld b,0Ch
+task2_loop:
+        ld a,(hl)
+        out (05),a
+        out (06),a
+        inc hl
+        call task1_delay
+        djnz task2_loop
+        jr task2
+task2_data:
+        db 18h,3Ch,7Eh,0FFh,0E7h,0C3h
+        db 81h,0C3h,0E7h,0FFh,7Eh,3Ch
+
+;Task 3 - GLCD Font Demo
+        .org 53ddh
+task3:
+        .db  3EH, 00H,0DFH, 3EH, 05H,0DFH, 3EH, 0DH
+        .db 0DFH, " Press Any Key", 00H
+        .db  0EH, 00H,0CFH, 06H, 40H, 3EH, 80H,0CDH
+        .db  24H, 54H, 79H,0CDH, 28H, 54H, 0CH,0CBH
+        .db  79H, 20H, 04H, 10H,0F5H, 18H,0EBH, 21H
+        .db  40H,0A1H,0CFH, 06H, 20H, 3EH, 80H,0CDH
+        .db  24H, 54H, 7CH,0CDH, 28H, 54H, 7DH,0CDH
+        .db  28H, 54H, 23H, 10H,0F5H, 18H,0EBH,0D3H
+        .db  07H, 18H, 02H,0D3H, 87H, 3EH, 0FH,0DFH
+        .db 0C9H
+
+;LCD Particle Simulation
+;-----------------------
+;The Code should be straight forward to follow.  It can be adapted to your own Z80
+;by changing some of the constants below.
+
+;NOTE: RST 30H on BMON does a check for LCD Busy.  Here is the code. Replace RST 30
+;with the following if not using BMON.
+; IE: do a 'CALL RST30'
+
+;RST 30 (F7)
+;TEST THE BUSY STATE OF THE LCD AND LOOP WHILE BUSY
+; RST30:      IN      A, (LCD_IR)                         ;READ STATUS BIT FROM LCD
+;             RLCA                                        ;PUT IN CARRY
+;             JR      C, RST30                            ;LOOP IF LCD BUSY
+;             RET                                         ;DONE
+            ORG    5500H
+
+task4:
+
+;Port 4 on TEC is connected to LCD Enable
+;A7 is connected to  Register select.  A7=0 for Instruction, A7=1 for Data
+LCD_IR:     EQU    00000100B
+LCD_DR:     EQU    10000100B ;A7 is Data Register
+BALLLST:    EQU    TASK4_RAM     ;Active Balls in RAM
+ROW1:       EQU    80H       ;LCD DDRAM Row 1 Start Address
+ROW2:       EQU    0C0H      ;LCD DDRAM Row 2 Start Address
+ROW3:       EQU    94H       ;LCD DDRAM Row 3 Start Address
+ROW4:       EQU    0D4H      ;LCD DDRAM Row 4 Start Address
+MAXCOL:     EQU    100       ;Max Columns
+MAXROW:     EQU    32        ;Max Rows
+BALL:       EQU    6FH       ;Ball shape 'o'
+
+
+            ; LCD set up
+            RST    28H              ;Check for LCD Busy
+            LD     A,01H            ;Display Clear
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+            RST    28H              ;Check for LCD Busy
+            LD     A,06H            ;Increment Cursor from Left to Right
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+            RST    28H              ;Check for LCD Busy
+
+            ; Load Any Customer LCD Characters
+            CALL   LOADCHARS
+
+LOADBALLS:
+            ;Load Default Balls to RAM
+            LD     HL,BALLS         ;Get Ball Data
+            LD     DE,BALLLST       ;Get Ball RAM address
+L1:
+            LDI
+            LD     A,(HL)           ;Check for 
+            CP     0FFH             ;End of List
+            JR     NZ,L1
+            LD     (DE),A           ;Save FF
+
+;DRAW/MOVE Loop.
+;Graphical engines have a Draw/Move cycle.  Draw the Screen, and Move the data for the screen.
+;Also do a keyboard check if needed in the Move.  This is fairly typical.
+DRAW:
+            LD     HL,BALLLST       ;Get Ball list
+DRAW1:
+            LD     B,(HL)           ;Load Position X and Positino Y into BC
+            INC    HL
+            LD     C,(HL)
+
+            INC    HL
+            INC    HL
+            INC    HL
+            INC    HL
+            INC    HL
+            LD     D,(HL)           ;Load Ball ASCII character into D
+            CALL   DRAWLCD          ;Draw Ball on LCD
+
+            INC    HL               ;Move to next Ball
+            LD     A,(HL)
+            CP     0FFH             ;End of List
+            JR     NZ,DRAW1
+
+;Ball Automatic Movement with Velocity.  Use IX regitster to easlier index Ball Table
+;IX+0 = Pos X, IX+1 = Pox Y, IX+2 = Vel X, IX+3 = Vel Y, IX+4 = Accel, IX+5 = Accel Timer
+
+MOVE:
+            LD     IX,BALLLST       ;Link IX to Ball List
+M1:
+            LD     A,(IX+0)         ;Check if End of List
+            CP     0FFH             ;
+            JR     Z,DRAW           ;Yes, Move is over, Loop Back to Draw
+            ;Decrease Timer, if zero, add velocity to position
+            LD     A,(IX+5)         ;Get Accelleration Timer
+            OR     A                ;Is it zero?
+            JR     Z,M3             ;Yes, Add Velocity, reset timer
+            DEC    (IX+5)           ;Decrease Timer
+            JR     SKIPMOVE         ;No Blanking needed as Ball didn't move
+M2:         ;Clear Prevous Ball, Move IX to next Ball and process next ball    
+            PUSH   DE               ;Copy DE into
+            POP    BC               ;BC
+            LD     D,20H            ;Load D as Space
+            CALL   DRAWLCD          ;Clear out previous square
+            CALL   COLLISION        ;A Ball has moved, check for Ball Collisions
+
+SKIPMOVE:
+            LD     BC,07H           ;Next Ball Index
+            ADD    IX,BC            ;Move IX to next Ball
+            JR     M1               ;Process Next Ball
+M3:         ;Add Velocity to Ball Position. If out of Bounds, reverse velocity, reset timer
+            ;Update X Position
+            LD     A,(IX+2)         ;Get Velocity X
+            SUB    04H              ;Normalise Velocity
+            LD     B,A              ;Save in B
+            LD     A,(IX+0)         ;Get Position X
+            ADD    A,B              ;Update Position X
+            JR     Z,M4             ;Zero, Invert X
+            JP     P,M5             ;Not Negative, Check for carry
+M4:         ;Invert X Velocity to Bounce off Wall
+            LD     A,(IX+2)         ;Get Velocity X
+            NEG                     ;Get 2s Compliment
+            AND    07H              ;Mask out irrelevant bits
+            LD     (IX+2),A         ;Store updated X Velocity
+            JR     M3               ;Try Move Again
+M5:         ;Check to see if X > MAXCOL
+            CP     MAXCOL           ;Is it Greater than 
+            JR     C,M6             ;MAX COL, No if Carry Set        
+            JR     NZ,M4            ;Or Zero Set 
+M6:         ;All Good, update X Pos
+            LD     D,(IX+0)         ;Save Previous X Pos
+            LD     (IX+0),A         ;Save New Pos X
+M7:         ;Update Y Position
+            LD     A,(IX+3)         ;Get Velocity Y
+            SUB    04H              ;Normalise Velocity
+            LD     B,A              ;Save in B
+            LD     A,(IX+1)         ;Get Position Y
+            ADD    A,B              ;Update Position Y
+            JR     Z,M8             ;Zero, Invert Y
+            JP     P,M9             ;Not Negative, Check for carry
+M8:         ;Invert Y Velocity to Bounce off Wall
+            LD     A,(IX+3)         ;Get Velocity Y
+            NEG                     ;Get 2s Compliment
+            AND    07H              ;Mask out irrelevant bits
+            LD     (IX+3),A         ;Store updated Y Velocity
+            JR     M7               ;Try Move Again
+M9:         ;Check to see if Y > MAXROW
+            CP     MAXROW           ;Is it Greater than 
+            JR     C,M10            ;MAX ROW, No if Carry Set        
+            JR     NZ,M8            ;Or Zero Set 
+M10:        ;All Good, update Y Pos
+            LD     E,(IX+1)         ;Save Previous Y Pos
+            LD     (IX+1),A         ;Save New Pos Y
+M11:        ;Reset Timer
+            LD     A,(IX+4)         ;Get Accelleration
+            LD     (IX+5),A         ;Reset Timer
+            JR     M2               ;Get Next Ball
+
+; Find Coliding Pairs
+; Start at BALLLST, interate through all balls.   Compare Balls X,Y position.  If they
+; occupy the same LCD Charater spot, Bounce balls off eachother.  Only compare balls 
+; that haven't been previously compared.
+; The Elastic Physics is simpla as I assue all balls are the same Mass.  I calculate the 
+; Kinetic Energy between the two velocies, then subtract this from Ball 1 and Add it to
+; Ball two
+;
+; Kerg = Ball_1.vel - Ball_2.vel
+; Ball_1.vel -= Kerg
+; Ball_2.vel += Kerg
+;
+COLLISION:
+            LD     IY,BALLLST       ;Get Ball list
+C0:
+            PUSH   IY               ;Ball 1
+            POP    IX               ;Ball 2
+C1:
+            LD     A,(IX+7)         ;Get Next Ball 2
+            CP     0FFH             ;Is it the End of List?
+            JR     Z,C3             ;Yes, Get Next Ball 1
+
+            LD     BC,0007H         ;Move IX to next Ball 2
+            ADD    IX,BC
+            LD     B,(IX+0)         ;Get Ball 2 Position X
+            LD     C,(IX+1)         ;Get Ball 2 Position Y
+            CALL   PIXEL2CHAR       ;Convert to LCD Character Space
+            PUSH   BC               ;Save in HL
+            POP    HL
+            LD     B,(IY+0)         ;Get Ball 1 Position X
+            LD     C,(IY+1)         ;Get Ball 1 Position Y
+            CALL   PIXEL2CHAR       ;Convert to LCD Character Space
+            OR     A                ;Reset Carry flag, so SBC = SUB
+            SBC    HL,BC            ;Check to see if in same LCD Space
+            JR     Z,MATCH          ;Yes, Jump to Bounce Routine
+            JR     C1               ;No, Get Next Ball 2
+;Change Ball Velocities based on Elastic Collision formula.  The commented out section
+;Does the basic forumlar above.  But with equal Mass and no Friction, just swap the 
+;velocities of each ball...                      
+MATCH:
+            ;Calcultate Kinetic Energy between balls
+            ; LD     A,(IY+2)         ;Get Ball 1 Vx
+            ; LD     B,(IX+2)         ;Get Ball 2 Vx
+            ; SUB    B                ;B1.vx - B2.vx
+            ; LD     B,A              ;Save in B (Kine X)
+            ; LD     A,(IY+3)         ;Get Ball 1 Vy
+            ; LD     C,(IX+3)         ;Get Ball 2 Vy
+            ; SUB    C                ;B1.vy - B2.vy
+            ; LD     C,A              ;Save in C (Kine Y)
+
+            ;Subtract Kinetic Energy from Ball 1
+            ; LD     A,(IY+2)         ;Get Ball 1 Vx
+            ; SUB    B                ;B1.Vx - KineX
+            ; LD     (IY+2),A         ;Save new Ball 1 Vx 
+            ; LD     A,(IY+3)         ;Get Ball 1 Vy
+            ; SUB    C                ;B1.Vy - KineY
+            ; LD     (IY+3),A         ;Save Ball 1 Vy
+
+            ;Add Kinetic Energy from Ball 2
+            ; LD     A,(IX+2)         ;Get Ball 2 Vx
+            ; ADD    A,B              ;B2.Vx + KineX
+            ; LD     (IX+2),A         ;Save Ball 2 Vx
+            ; LD     A,(IX+3)         ;Get Ball 2 Vy
+            ; ADD    A,C              ;B2.Vy + KineY
+            ; LD     (IX+3),A         ;Save Ball 2 Vy
+
+            ;IY = Ball 1, IX = Ball 2
+            ;Interchange Ball 1 Velocity with Ball 2 Velocity
+            LD     A,(IY+2)         ;Get Ball 1 Vx
+            LD     B,(IX+2)         ;Get Ball 2 Vx
+            LD     (IY+2),B         ;Save Ball 2 Vx to Ball 1 Vx 
+            LD     (IX+2),A         ;Save Ball 1 Vx to Ball 2 Vx
+
+            LD     A,(IY+3)         ;Get Ball 1 Vy
+            LD     B,(IX+3)         ;Get Ball 2 Vy
+            LD     (IY+3),B         ;Save Ball 2 Vy to Ball 1 Vy 
+            LD     (IX+3),A         ;Save Ball 1 Vy to Ball 2 Vy
+             
+;Get Next Ball 1
+C3:
+            LD     BC,0007H         ;Move IY to next Ball 1
+            ADD    IY,BC          
+            LD     A,(IY+7)         ;Check if on Last Ball
+            CP     0FFH             ;
+            JR     NZ,C0            ;No, Repeat Collision for next Ball
+                                    ;Yes, Skip last ball as its already
+                                    ;been compared already
+            RET                     ;Continue with DRAW/MOVE Loop
+
+
+;Draw a character on the LCD.  Converts LCD Pixel to 20x4 Character.  Places Ball on Character
+;Entry:
+;   B = X-coordinate (00H-64H)
+;   C = Y-coordinate (00H-20H)
+;   D = Ball ASCII value
+;Exit:
+;   A corrupt
+DRAWLCD:
+            PUSH   HL
+            RST    28H              ;Check for LCD Busy
+            ;Convert Pixels to Character
+            CALL   PIXEL2CHAR
+            ;Get Rows
+            LD     A,C
+            LD     HL,LCDROWS
+            ADD    A,L
+            LD     L,A
+            LD     A,(HL)
+            ;Get Column
+            ADD    A,B
+            ;Set cursor to BC coordinate
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+            ;Draw Ball
+            RST    28H              ;Check for LCD Busy
+            LD     A,D
+            OUT    (LCD_DR),A       ;Draw Ball
+            POP    HL
+            RET
+
+;Converts Pixel Space to Character Space.  There are 100 Pixels for 20 Characters across and
+;32 Pixels for 4 Characters Down.
+;Entry:
+;   B = X-coordinate (00H-64H)
+;   C = Y-coordinate (00H-20H)
+;Exit:
+;   BC = Character Space
+PIXEL2CHAR:
+            LD     A,B              ;Store X in A
+            LD     E,05H            ;Five Pixels across
+            LD     B,0FFH           ;Clear B
+PC1:
+            INC    B                ;Count Characters
+            SUB    E                ;Check for zero
+            JR     C,PC2            ;or
+            JR     NZ,PC1           ;carry
+PC2:
+            LD     A,C              ;Store Y in A
+            LD     E,08H            ;Eight Pixels down
+            LD     C,0FFH           ;Clear C
+PC3:
+            INC    C                ;Count Characters
+            SUB    E                ;Check for zero
+            RET    C                ;or
+            JR     NZ,PC3           ;carry
+            RET
+
+;Load Custom LCD Characters to the CGRAM.  Only Eight can be used at once and reference them
+;from 0-7.
+LOADCHARS:
+            ; Tell the LCD that next data will be to CGRAM
+            RST    28H              ;Check for LCD Busy
+            LD     A,40H            ;CGRAM entry
+            OUT    (LCD_IR),A       ;Send to Instruction Register (IR)
+
+            ; Save multiple characters to CGRAM using lookup table and OUTI
+            LD     BC,4000H | LCD_DR  ;B=40/8 (letters), C=84 (port number)
+            LD     HL,LCDCHARS      ;LCD table lookup
+LC1:
+            RST    28H              ;Check for LCD Busy
+            OUTI                    ;Send (HL) to port C, Decrement B, Increment HL
+            JR     NZ, LC1          ;OUTI sets zero if B=0;
+            RET
+
+;Balls Table, 6 Bytes per ball, End with FF.  Velocity is a range from 1 to 7 where,
+;1 is fast nagative, 4 is stationary and 7 is fast positive.
+;   Byte 1,2: Start X (1 - MAXCOL), Start Y (1 - MAXROW)
+;   Byte 3,4: Velocity Vector X (1 - 7), Vector Y (1 - 7)
+;   Byte 5:   Current Accelleration (00 = Fast to 80 = Slow)
+;   Byte 6:   Accelleration Timer (Initially set to 0)
+;   Byte 7:   Ball shape DDRAM/CGRAM ASCII Value
+LCDROWS:
+            DB     ROW1,ROW2,ROW3,ROW4
+LCDCHARS:
+            DB     00H,0AH,1FH,1FH,0EH,04H,00H,00H    ;Heart
+            DB     04H,0EH,0EH,0EH,1FH,00H,04H,00H    ;Bell
+            DB     1FH,15H,1FH,1FH,0EH,0AH,1BH,00H    ;Alien
+            DB     00H,0EH,1BH,11H,11H,1BH,0EH,00H    ;Ball
+            DB     01H,03H,0FH,0FH,0FH,03H,01H,00H    ;Speaker
+            DB     01H,03H,05H,09H,09H,0BH,1BH,18H    ;Sound
+            DB     00H,0EH,15H,1BH,0EH,0EH,00H,00H    ;Skull
+            DB     0EH,11H,11H,1FH,1BH,1BH,1FH,00H    ;Lock
+;Initial Ball Setup            
+BALLS:
+            DB     01H,01H,06H,04H,60H,00H,00H
+            DB     63H,01H,02H,04H,60H,00H,01H
+            DB     33H,15H,07H,07H,60H,00H,02H
+            DB     60H,09H,02H,06H,60H,00H,03H
+            DB     34H,18H,03H,03H,60H,00H,04H
+            DB     20H,1AH,06H,01H,60H,00H,05H
+            DB     40H,10H,02H,04H,60H,00H,06H
+            DB     30H,0DH,01H,03H,60H,00H,07H,0FFH
