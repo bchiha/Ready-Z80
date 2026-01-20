@@ -1,0 +1,398 @@
+; RedEye IR Receiver Z80 Code.
+;-----------------------------
+;Code by B. Chiha Jan-2026
+
+;This is a simple interrupt driven IR Receiver for the HP Redeye Protocol.  Some HP
+;Calculators include an IR LED that will transmit screen data to a portable Printer,
+;the HP-82240 series.
+
+;The input of the IR Signal is connected to the Interrupt pin of the Z80.  Each time
+;a pulse is detected, an interrupt is generated.  The interrupt handler measures the
+;time between pulses to determine if a 0 or 1  bit is being sent.  The  data is sent
+;in frames that include start bits, data bits, and error  correction bits.  The main
+;loop collects the received  frames and outputs the  received characters to a serial
+;terminal.
+
+;This code portable to any  Z80 system with an  interrupt input and a serial  output
+;routine.  The serial code is specifically setup for the TEC-1G Computer, but can be
+;easily  modified for  other systems.  The interrupt  handler  routine is  placed at
+;address 0892H, which is the default location for  the TEC-1G.  Change this  address
+;as needed.
+
+;This code was explained and demonstrated on the Ready? Z80 YouTube Channel:
+;https://www.youtube.com/@ReadyZ80
+
+;Error correction masks
+H1:     equ 01111000b      ;defined error correction bit masks by HP RedEye Protocol
+H2:     equ 11100110b
+H3:     equ 11010101b
+H4:     equ 10001011b
+R_PORT: equ 0FBH           ;for timing routine
+
+        .org 4000h
+;set up interrupt handler.  This is for TEC-1G, change as needed
+        im 1                            ;use interrupt mode 1
+        ld hl,interruptHandler          ;interrupt handler address
+        ld (0892h),hl                   ;set interrupt vector
+
+;read one RedEye frame using interrupts
+;one 32.786kHz cycle is 30.5us which gives 30.5 / 0.25us = 122 cycles per tick
+readFrame:
+        ;wait for first interrupt
+        ld hl,0         ;ticks counter (H) and frame state (L), 0=Start Bits, 1=ECC, 2=Data
+        ld de,0         ;Data byte (D) and Error correction byte (E)
+        ld bc,0         ;bit counter (B) and ticker counter (C)
+waitInt:
+        ei              ;enable interrupts
+        halt            ;wait for interrupt
+        ;first pulse received, start tick counter
+tickLoop:
+        ;tick loop is exactly 123 clock cycles.  7 + (7 * 14) + 18 = 123
+        ;this is a close enough approximation to 122 cycles per tick
+        ld c,7          ;5 * 23 cycles
+tickInner:
+        dec c
+        jp nz,tickInner
+        inc h        ;one tick done, check for interrupt
+        nop
+        jp tickLoop
+;
+printChar:
+        ld c,22
+        rst 10h       ;send char to serial
+        jp readFrame  ;get next frame
+
+;Interrupt handler that gets called on each pulse detected 
+interruptHandler:
+        ;pulse detected, start timing, check tick counter
+        ld a,l        ;get frame state, either Start or Data bits
+        cp 0
+        jp z,readStartBits
+        cp 1
+        jp z,readDataBits
+        jp exitInt
+
+;5-6 ticks gap,
+;13-14 ticks long gap
+;21-24 ticks very long gap
+;also check previous bit to determine tick length
+;expect 2 bits, at bit 4, save ECC and continue with the reset of the eight bits
+readDataBits:
+        ld a,h          ;get tick count
+        cp 0            ;is this the first pulse?
+        jp z,exitInt
+        cp 4h           ;1-3
+        jp c,resetTicks ;too short, wait again for start bit
+        cp 10h          ;10-over too long
+        jp nc,medGap
+        ;pulse is 5-6, must be a 1
+        inc d           ;add bit to ECC byte
+        rlc d
+        jp DataCount
+medGap:
+        cp 16h           ;long gap
+        jp nc,longGap
+        ; pulse is 10-15, check previous bit to determine if 0 or 1
+        ld a,b
+        cp 4            ;check bit count, if on 4 then use last bit of ECC byte
+        jp z,useECC
+        bit 1,d         ;check last bit
+        jp continueBit
+useECC:
+        bit 0,e         ;check last bit
+continueBit:
+        jp z,shortGap
+        ;last bit was 1, so this is a 1
+        inc d
+shortGap:
+        ;last bit was 0, so this is a 0
+        rlc d
+        jp DataCount
+longGap:
+        cp 26h
+        jp nc,missBit
+        rlc d
+DataCount:
+        inc b           ;bit counter
+        ld a,b
+        cp 4
+        jp nz,cont
+        ld e,d          ;save ECC byte
+        sra e           ;adjust for last shift
+        ld d,0          ;clear ECC byte for data
+cont:
+        cp 12           ;end of data byte
+        jp nz,resetTicks
+        rrc d           ;fix Data byte
+        ld a,d          ;save in A
+        ld d,e          ;load ECC byte in D
+        ;all bits here, print it
+        ld hl,printChar
+        ex (sp),hl      ;jump out of ticker and print char
+        reti            ;exit interrupt without re-enabling interrupts yet
+missBit:
+        ;I don't handle any missed bit.  I found that It rarely happens.  But code to 
+        ;correct 1 or 2 missed bits is below.
+        rst 30h         ;TEC-1G specific. Display Debug info on screen
+
+
+;Read the three start bits.  All three must have a short gap (5-6 ticks) between pulses.
+readStartBits:
+        ld a,h          ;get tick count
+        cp 0            ;is this the first pulse?
+        jp z,exitInt    ;first pulse, just exit
+        cp 4h           ;1-3
+        jp c,resetTicks ;too short, wait again for start bit
+        cp 8h            ;8-over too long
+        jp nc,resetTicks
+        ;good start bit
+        inc b           ;check for 3 start bits
+        ld a,b
+        cp 1
+        jp z,resetTicks    ;second start bit, keep going
+        ;all start bits here, change state
+changeState:
+        inc l           ;move to next state
+        ld b,0
+resetTicks:
+        ld h,0          ;clear ticks
+exitInt:
+        ei            ;re-enable interrupts 
+        reti
+
+;Below is code of the failed timer attempt.  The input of the IR signal is connected to the
+;R_PORT.  The main loop waits for a pulse, checks again after a set delay.  A good bit is
+;either a pulse and no pulse in the second half, no pulse and a pulse in the second half.
+;Anything else is treated as a missed bit.  When all bits are received, error correction is done.
+mainTimingLoop:
+        call readFrameTiming
+
+        ;returns A=data byte, D=ECC byte, E=missed bits
+        ;check for errors
+        ld l,a
+checkMissed:
+        ld a,e
+        or a
+        jr z,noMissed
+        ;count number of missed bits, if > 2 then use '?'
+        ld b,8
+        xor a
+nextMiss:
+        rlc e
+        adc a,0
+        djnz nextMiss
+        cp 3
+        jp c,fixError
+        ;indicate missed bits with '?'
+        ;ld a,"?"
+        jr writeChar
+noMissed:
+        ;write received char
+        ld a,l
+writeChar:
+        cp 0ffh
+        jp z,mainTimingLoop
+        ld c,22
+        rst 10h       ;send char to serial
+        jp mainTimingLoop
+
+
+;read one RedEye frame
+;Input: none
+;Output: A = byte received
+;        D = error correction byte
+;        E = missed byte
+;notes: 1708 cycles for 427us delay at 4MHz, but pulse width is on average 213us, half
+;of this is 106.5us, or 427 cycles.  after the first pulse detection, need to wait
+;427 cycles before reading the next half byte. 
+readFrameTiming:
+        ld bc,0
+startBit:
+        in a,(R_PORT)   ;read a byte from the RedEye Port
+        rlca             ;rotate D7 into carry
+        jr c,startBit    ;if no data, keep reading
+;delay to middle of pulse
+        ld l,27          ;427 (cc) - 18 (lead) - 27 (call/ret) / 14 (per loop) = 27
+        call timeDelay
+;first of three half bytes detected, check the next two
+        ld l,119         ;1708 (cc) - 7 (lead) - 27 (call/ret) / 14 (per loop) = 119
+        call timeDelay
+        in a,(R_PORT)
+        rlca
+        jr c,error1
+        ld l,119         ;1708 (cc) - 11 (lead) - 27 (call/ret) / 14 (per loop) = 119
+        call timeDelay
+        in a,(R_PORT)
+        rlca
+        jr c,error1
+;start bytes accounted for, read the error correction bits
+        ld b,4           ;four ECC bits
+        ld d,0
+        ld l,117         ;1708 (cc) - 39 (lead) - 27 (call/ret) / 14 (per loop) = 117
+readECC:
+        ld e,0
+        call timeDelay
+        in a,(R_PORT)
+        rlca
+        jr c,e1
+        inc e           ;pulse detected
+        sla e
+e1:
+        ;read second half byte
+        ld l,117         ;1708 (cc) - 41 (lead) - 27 (call/ret) / 14 (per loop) = 119
+        call timeDelay
+        in a,(R_PORT)
+        rlca
+        jr c,e2    
+        inc e           ;pulse detected
+e2:
+        ;a correct bit should be either 1 or 2
+        ;but assume ECC bits are correct
+        srl e
+        ;save it in D
+        ld a,d
+        sla a
+        add a,e
+        ld d,a
+        ld l,114        ;1708 (cc) - 81 (lead) - 27 (call/ret) / 14 (per loop) = 114
+        djnz readECC
+        and 0FH         ;mask to four bits
+        ld d,a          ;save ECC byte
+        push de         ;save ECC byte
+;now read the data byte
+        ld b,8
+        ld de,0
+        ld l,111        ;1708 (cc) - 122 (lead) - 27 (call/ret) / 14 (per loop) = 111
+readData:
+        ld c,0
+        call timeDelay
+        in a,(R_PORT)
+        rlca
+        jr c,r1
+        inc c           ;pulse detected
+        sla c
+r1:
+        ;read second half byte
+        ld l,117         ;1708 (cc) - 41 (lead) - 27 (call/ret) / 14 (per loop) = 119
+        call timeDelay
+        in a,(R_PORT)
+        rlca
+        jr c,r2    
+        inc c           ;pulse detected
+r2:
+        ;a correct bit should be either 1 or 2
+        ld a,c
+        or a
+        jr z,addMissed
+        cp 3
+        jr nc,addMissed
+        ;valid bit, add it to D
+        srl a           ;convert to 1 or 0
+        sla d           ;shift bits one to the left
+        add a,d
+        ld d,a
+        sla e           ;update missed bit
+        ld l,111        ;1708 (cc) - 125 (lead) - 27 (call/ret) / 14 (per loop) = 111
+        djnz readData   ;get next bit
+        jr finishData
+addMissed:
+        sla e           ;shift missed bits
+        inc e
+        sla d           ;shift data bits
+        ld l,112        ;1708 (cc) - 118 (lead) - 27 (call/ret) / 14 (per loop) = 112
+        djnz readData   ;get next bit
+        ;all bits read, return Byte, ECC, missed bits
+finishData:
+        ld a,d         ;data byte in A
+        pop bc         ;restore ECC byte
+        ld d,b         ;ECC byte in D
+        ret
+error1:
+        ret
+
+
+
+
+; Time delay.  8-bit Delay routine
+; Input: L = delay amount
+; Destroy: none
+; 14 cycles per L
+timeDelay:
+        dec l
+        jp nz,timeDelay
+        ret
+
+;Error correction routine.  Fix 1 or 2 missed bits.
+;Input: L=data byte, D=EEC byte, E=missed bits
+;Output: A=data byte with corrections
+fixError:
+    ld a,e      ;load missed
+    and H4
+    jp pe,c1    ;even parity, don't fix
+    ld c,a      ;save error bit in C
+    ;check ECC
+    ld a,d    ;get H4 of correction
+    and 01h
+    ld b,a      ;store parity in B
+    ld a,l      ;get data
+    and H4
+checkParity:
+    jp pe,pEven
+    ld a,b
+    cp 1        ;check if odd parity
+    jr pDone
+pEven:
+    ld a,b
+    cp 0        ;check if even parity
+pDone:
+    jr z,updateMissed
+    ld a,l
+    or c
+    ld l,a  
+updateMissed:
+    ld a,c
+    xor e
+    ld e,a
+    jp checkMissed    
+c1:
+    ld a,e      ;load missed
+    and H3
+    jp pe,c2    ;even parity, don't fix
+    ld c,a      ;save error bit in C
+    ;check ECC
+    ld a,d    ;get H3 of correction
+    rrca
+    and 01h
+    ld b,a      ;store parity in B
+    ld a,l      ;get data
+    and H3
+    jp checkParity
+c2:
+    ld a,e      ;load missed
+    and H2
+    jp pe,c3    ;even parity, don't fix
+    ld c,a      ;save error bit in C
+    ;check ECC
+    ld a,d    ;get H4 of correction
+    rrca
+    rrca
+    and 01h
+    ld b,a      ;store parity in B
+    ld a,l      ;get data
+    and H2
+    jp checkParity
+c3:
+    ld a,e      ;load missed
+    and H1
+    jp pe,noMissed    ;even parity, don't fix
+    ld c,a      ;save error bit in C
+    ;check ECC
+    ld a,d    ;get H4 of correction
+    rrca
+    rrca
+    rrca
+    and 01h
+    ld b,a      ;store parity in B
+    ld a,l      ;get data
+    and H1
+    jp checkParity
