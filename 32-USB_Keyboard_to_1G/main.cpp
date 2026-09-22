@@ -1,15 +1,22 @@
 // =============================================================================
-// TEC-1G Matrix Keyboard Interface — Raspberry Pi Pico (RP2040)
+// TEC-1G Matrix Keyboard Interface — Raspberry Pi Pico (RP2040) — Version 6
 // =============================================================================
 //
 // Hardware:
-//   - Raspberry Pi Pico running at 120MHz (required for PIO-USB)
+//   - Raspberry Pi Pico / Pico W (RP2040) running at 120MHz (PIO-USB)
 //   - USB keyboard connected via GP0 (D+) / GP1 (D-)
-//   - 74HCT245 level shifters on all 16 I/O lines (3.3V <-> 5V)
+//   - TEC A8-A15 -> 74LVC245A @ 3.3V -> Pico address inputs
+//     (LVC inputs are 5V-tolerant; outputs are 3.3V logic)
+//   - Pico data outputs -> 74HCT245 @ 5V -> TEC keyboard D0-D7 inputs
+//     (HCT TTL thresholds accept the Pico's 3.3V HIGH level)
+//   - 74HCT245 /OE on GP5, with external 10k pull-up to Pico 3V3.
+//     /OE is disabled during startup, then enabled once and left enabled.
+//   - Optional TEC Caps status (+5V when active) -> 10k/20k divider -> GP13
+//   - GP27 -> open-drain/open-collector stage -> TEC/Z80 /RESET
 //
 // platformio.ini:
 //   platform = https://github.com/maxgerhardt/platform-raspberrypi.git
-//   board = pico
+//   board = rpipicow
 //   framework = arduino
 //   board_build.core = earlephilhower
 //   board_build.f_cpu = 120000000L
@@ -25,9 +32,30 @@
 //   GP1        USB D-  (PIO-USB host, must be D+ + 1)
 //   GP6-GP11   Inputs  A8-A13  (from Mon3 address bus, via level shifter)
 //   GP14-GP15  Inputs  A14-A15 (from Mon3 address bus, via level shifter)
-//   GP16-GP22  Outputs D0-D6   (to Mon3 data bus,    via level shifter)
-//   GP28       Output  D7      (to Mon3 data bus,    via level shifter)
+//   GP13       Input   TEC Caps status (5V via 10k/20k resistor divider)
+//   GP16-GP22  Outputs D0-D6   (to TEC matrix data inputs via 74HCT245)
+//   GP27       Output  Z80 reset control (HIGH asserts via MOSFET/transistor)
+//   GP28       Output  D7      (to TEC matrix data input via 74HCT245)
 //
+// =============================================================================
+// VERSION 6 FEATURE SUMMARY
+// =============================================================================
+//   - Ordinary USB keys behave as held physical switches in the TEC matrix.
+//   - Caps Lock is edge-triggered: each USB press produces one 20 ms virtual
+//     matrix closure, preventing MON3 from repeatedly toggling while held.
+//   - GP13 is enabled as an OPTIONAL TEC Caps-status input. A weak internal
+//     pull-down keeps the input defined on boards where the status bodge is not
+//     fitted. If the 10k/20k divider is added, the TEC state drives GP13 and
+//     the USB keyboard Caps LED mirrors the real TEC Caps state.
+//   - Every 30 s, a HID SET_REPORT is used as a harmless USB-host health probe.
+//     If it cannot complete within 2 s, Core 1 stops feeding the RP2040 watchdog.
+//   - The watchdog also recovers if USBHost.task() itself becomes stuck.
+//   - Ctrl+Alt+Delete (VNP) resets the TEC, releases /RESET after 100 ms, then
+//     reboots the Pico 50 ms later for a clean restart of the complete interface.
+//   - The timing-critical Core 0 matrix loop remains the proven continuous
+//     RAM-resident implementation and is not modified by the auxiliary logic.
+// =============================================================================
+
 // =============================================================================
 // TIMING DESIGN NOTE
 // =============================================================================
@@ -49,14 +77,20 @@
 //   rows must be caught in the SAME pass, and marginal per-row timing
 //   makes that rare for some row pairs (Shift+1 ~50%, Shift+M ~never).
 //
-//   So the hot path (loop(), running continuously on Core 0) does the
-//   absolute minimum possible:
-//     1. ONE 32-bit read of all GPIO pins at once (SIO register, ~1 cycle)
-//     2. ONE compare per slot against a PRECOMPUTED expected-address value
-//     3. ~3 SIO register writes to drive/release the data pins
-//   It also runs from RAM (__not_in_flash_func) so USB-host activity on
-//   Core 1 cannot stall it via shared XIP flash-cache evictions, and every
-//   aggregate mask it touches is a compile-time immediate, not a RAM load.
+//   The revised hot path (loop(), continuously on Core 0) freezes D0-D7 for
+//   as long as the UPPER address byte (A8-A15) remains unchanged. When that
+//   byte changes, it immediately snapshots the two published key slots and
+//   computes the required matrix return value. Any upper-address value that
+//   does not match an active key row produces 0xFF. This is deliberately
+//   faster than first qualifying an exact one-low pattern, and importantly
+//   prevents a late response from leaving the PREVIOUS ROW's key pattern on
+//   the TEC keyboard-return lines. On an address transition it performs one
+//   aggregate GPIO read, two slot compares, and at most ONE SIO gpio_togl
+//   write to change the data byte. The code runs from RAM
+//   (__not_in_flash_func) so USB-host activity on Core 1 cannot stall it via
+//   shared XIP flash-cache evictions. The function contains its own infinite
+//   polling loop and never returns to the Arduino framework, avoiding the
+//   USE_TINYUSB yield() that would otherwise run between loop() calls.
 //
 //   All the "thinking" -- which key is pressed, which row/col that maps to,
 //   converting that to GPIO bitmasks -- happens in processReport(), which
@@ -67,6 +101,7 @@
 #include "Adafruit_TinyUSB.h"
 #include "pico/stdlib.h"
 #include "hardware/structs/sio.h"
+#include "hardware/watchdog.h"
 
 // Run the hot loop from RAM: Core 1's USB-host stack continuously thrashes the
 // RP2040's shared XIP flash cache, and a cache miss inside loop() can cost more
@@ -92,22 +127,34 @@ const uint8_t ADDR_PINS[8] = {6, 7, 8, 9, 10, 11, 14, 15};
 const uint8_t DATA_PINS[8] = {16, 17, 18, 19, 20, 21, 22, 28};
 //                             D0  D1  D2  D3  D4  D5  D6  D7
 
-// ─── 74AHCT245 Output Enable control pin ─────────────────────────────────────
-// OE is active LOW on the 74AHCT245.
-// GP5 HIGH = OE high = chip outputs disabled (high-Z on B-side, Mon3 pull-ups
-//            hold data bus at 0xFF = no key pressed)
-// GP5 LOW  = OE low  = chip outputs enabled  (Pico drives the data bus)
+// ─── 74HCT245 Output Enable ──────────────────────────────────────────────────
+// /OE is active LOW. GP5 is used ONLY for safe startup sequencing:
+//   - external 10k pull-up to Pico 3V3 keeps the HCT245 disabled during reset
+//   - firmware initializes D0-D7 to HIGH (0xFF)
+//   - firmware then drives /OE LOW once and leaves it LOW permanently
 //
-// A 10kΩ pull-up resistor from OE to 5V is recommended on the PCB/breadboard
-// so that if the Pico resets or is unpowered, the chip stays safely disabled
-// and the TEC-1G data bus is never left floating or driven unexpectedly.
+// The TEC has its own buffer which decides when these keyboard-return lines
+// are connected to the Z80 data bus, so /OE does NOT belong in the hot path.
 #define OE_PIN 5
 #define OE_MASK (1u << OE_PIN)
-// Raw SIO writes -- identical registers to gpio_put(), spelled out so the hot
-// path never depends on wrapper-call codegen. GP5 is configured as OUTPUT in
-// setup() before these are ever executed.
-#define OE_DISABLE() (sio_hw->gpio_set = OE_MASK)   // HIGH = disable outputs
-#define OE_ENABLE()  (sio_hw->gpio_clr = OE_MASK)   // LOW  = enable outputs
+#define OE_ENABLE()  (sio_hw->gpio_clr = OE_MASK)   // LOW  = enabled
+
+// ─── TEC status / control pins ───────────────────────────────────────────────
+#define CAPS_STATUS_PIN 13   // TEC +5V Caps status through 10k/20k divider
+#define RESET_PIN       27   // HIGH turns on external pull-down transistor/MOSFET
+#define RESET_PULSE_MS  100u
+
+// GP13 is always enabled as an optional TEC Caps-status input. The firmware
+// keeps a weak pull-down active, so an unmodified board reads a stable LOW.
+// If the 10k/20k divider bodge is fitted, the external TEC signal overrides
+// the weak pull-down and the USB keyboard Caps LED follows the real TEC state.
+
+// A USB Caps press is converted to one short virtual matrix closure.
+// This is intentionally adjustable without touching any other key handling.
+#define CAPS_MATRIX_PULSE_MS 20u
+
+#define RESET_ASSERT()  gpio_put(RESET_PIN, 1)
+#define RESET_RELEASE() gpio_put(RESET_PIN, 0)
 
 // ─── Precomputed GPIO bitmasks ────────────────────────────────────────────────
 // Per-pin masks are built once in setup() from ADDR_PINS[] / DATA_PINS[] for
@@ -119,7 +166,7 @@ uint32_t ADDR_PIN_MASK[8];   // bit mask for each address line, e.g. 1<<ADDR_PIN
 uint32_t DATA_PIN_MASK[8];   // bit mask for each data line
 
 // All 8 data pins OR'd -- used to drive all latches HIGH before pulling one
-// LOW, so the 74AHCT245 sees 0xFF minus exactly one bit rather than all-zero.
+// LOW, so the 74HCT245 sees 0xFF minus exactly one bit rather than all-zero.
 // GP16,17,18,19,20,21,22,28 -- must match DATA_PINS[] above.
 #define ALL_DATA_MASK 0x107F0000u
 
@@ -182,6 +229,7 @@ const uint8_t specialMap[8][8] = {
 #define HID_KEY_TAB          0x2B
 #define HID_KEY_CAPS_LOCK    0x39
 #define HID_KEY_F1           0x3A  // mapped to SK_FUNC
+#define HID_KEY_DELETE       0x4C  // PC Delete key, used by Ctrl+Alt+Del VNP
 #define HID_KEY_RIGHT_ARROW  0x4F
 #define HID_KEY_LEFT_ARROW   0x50
 #define HID_KEY_DOWN_ARROW   0x51
@@ -189,8 +237,60 @@ const uint8_t specialMap[8][8] = {
 
 #define HID_MOD_LEFT_CTRL    0x01
 #define HID_MOD_LEFT_SHIFT   0x02
-#define HID_MOD_RIGHT_SHIFT  0x20
+#define HID_MOD_LEFT_ALT     0x04
 #define HID_MOD_RIGHT_CTRL   0x10
+#define HID_MOD_RIGHT_SHIFT  0x20
+#define HID_MOD_RIGHT_ALT    0x40
+
+// ─── USB keyboard / auxiliary state (Core 1 only) ───────────────────────────
+static uint8_t keyboardDevAddr  = 0;
+static uint8_t keyboardInstance = 0;
+static bool    keyboardMounted  = false;
+
+// HID interrupt-IN receive state is derived from TinyUSB itself via
+// tuh_hid_receive_ready(); do not maintain a parallel pending flag that can go stale.
+
+// TinyUSB HID control transfers (SET_PROTOCOL / SET_REPORT) are asynchronous.
+// In particular, do NOT repeatedly call tuh_hid_set_report() while EP0 is busy:
+// some RP2040/TinyUSB versions can wedge the host control transfer state.
+static bool    keyboardProtocolReady  = false;
+static bool    capsReportBusy         = false;
+static bool    capsLedSynced          = false;
+static bool    lastCapsLedState       = false;
+static bool    capsStateInFlight      = false;
+static uint32_t nextCapsReportAttempt = 0;
+
+// Must remain alive after tuh_hid_set_report() returns; TinyUSB may still be
+// using this byte while the control transfer completes.
+static uint8_t keyboardLedReport = 0;
+
+static bool     vnpWasHeld        = false;
+static bool     resetActive       = false;
+static uint32_t resetReleaseAt    = 0;
+static bool     picoRebootPending = false;
+static uint32_t picoRebootAt      = 0;
+
+// Caps is edge-triggered rather than held. These variables live only on Core 1.
+static bool     capsUsbWasHeld      = false;
+static bool     capsPulseActive     = false;
+static uint32_t capsPulseReleaseAt  = 0;
+
+// VNP reset sequencing: hold the TEC /RESET for 100 ms, release it, then give
+// the TEC another 50 ms before rebooting the Pico itself.  Releasing GP27 first
+// avoids relying on its state while the RP2040 is going through reset.
+#define PICO_REBOOT_AFTER_TEC_MS  50u
+
+// USB-host health monitoring. A harmless HID SET_REPORT (the current Caps LED
+// state) is sent periodically even when Caps has not changed. Completion of that
+// control transfer proves that TinyUSB/PIO-USB is still servicing the device.
+#define USB_HEALTH_PROBE_MS    30000u
+#define USB_HEALTH_TIMEOUT_MS   2000u
+#define USB_WATCHDOG_MS         5000u
+
+static uint32_t nextUsbHealthProbe   = 0;
+static uint32_t usbHealthDeadline    = 0;
+static bool     usbHealthProbeActive = false;
+static bool     watchdogStarted      = false;
 
 // =============================================================================
 // HOT-PATH STATE — touched by loop() on every iteration.
@@ -309,8 +409,8 @@ int8_t findEmptySlot() {
   return -1;
 }
 
-// Release one slot and clear it. Data pins stay as OUTPUT -- the latch
-// value doesn't matter since OE on the chip controls bus access.
+// Release one slot and clear it. Data pins remain outputs and the HCT245
+// remains enabled; Core 0 updates the presented byte on the next new row.
 void clearSlot(uint8_t s) {
   activeMatchPattern[s] = EMPTY_MATCH;  // hot loop's "slot live" flag -- reset FIRST
   activeAddrMask[s] = 0;
@@ -321,7 +421,6 @@ void clearSlot(uint8_t s) {
 void clearAllSlots() {
   clearSlot(0);
   clearSlot(1);
-  OE_DISABLE();  // both slots empty -- fully release the data bus
 }
 
 // Occupy a slot with a given (row, col) key. If the same `key` tag is
@@ -343,7 +442,6 @@ void occupySlot(uint16_t key, int8_t addr, int8_t data) {
     // Both slots full and this is a 3rd distinct key -- matches Mon3's own
     // 2-key-per-scan hardware limit, so we drop it rather than displace
     // an existing held key.
-    Serial.println("3rd simultaneous key ignored (matrix scan limit is 2)");
     return;
   }
 
@@ -356,12 +454,6 @@ void occupySlot(uint16_t key, int8_t addr, int8_t data) {
   activeSlotKey[slot]      = key;
   activeMatchPattern[slot] = ALL_ADDR_MASK & ~ADDR_PIN_MASK[addr];
 
-  Serial.print("Slot ");
-  Serial.print(slot);
-  Serial.print(" -> addr=A");
-  Serial.print(8 + addr);
-  Serial.print(" data=D");
-  Serial.println(data);
 }
 
 // Release any slot whose tracked key is NOT present in the keepKeys list.
@@ -370,15 +462,16 @@ void releaseSlotsNotIn(uint16_t const *keepKeys, uint8_t keepCount) {
   for (uint8_t s = 0; s < 2; s++) {
     if (activeSlotKey[s] == 0) continue;  // already empty
 
+    // Caps is a timed one-shot, not a member of the normal held-key list.
+    // Keep its slot alive until serviceCapsPulse() releases it.
+    if (capsPulseActive && activeSlotKey[s] == HID_KEY_CAPS_LOCK) continue;
+
     bool stillHeld = false;
     for (uint8_t k = 0; k < keepCount; k++) {
       if (keepKeys[k] == activeSlotKey[s]) { stillHeld = true; break; }
     }
 
     if (!stillHeld) {
-      Serial.print("Slot ");
-      Serial.print(s);
-      Serial.println(" released (key no longer held)");
       clearSlot(s);
     }
   }
@@ -392,7 +485,155 @@ uint16_t modifierTag(uint8_t skTag) {
   return SLOT_TAG_BIT | skTag;
 }
 
+// ─── VNP reset and Caps LED helpers (Core 1, NOT hot path) ──────────────────
+
+bool reportContainsKey(hid_keyboard_report_t const *report, uint8_t keycode) {
+  for (uint8_t i = 0; i < 6; i++) {
+    if (report->keycode[i] == keycode) return true;
+  }
+  return false;
+}
+
+void startCapsPulse() {
+  // Do not retrigger while a previous one-shot is still active.
+  if (capsPulseActive) return;
+
+  int8_t addr = -1, data = -1;
+  if (!findSpecialKey(SK_CAPS, addr, data)) return;
+
+  // Use the normal slot publisher so the timing-critical Core 0 loop remains
+  // completely unchanged. If both matrix slots are already occupied, Caps
+  // cannot be represented at that instant and is ignored like any 3rd key.
+  occupySlot(HID_KEY_CAPS_LOCK, addr, data);
+
+  if (findSlotByKey(HID_KEY_CAPS_LOCK) >= 0) {
+    capsPulseActive = true;
+    capsPulseReleaseAt = millis() + CAPS_MATRIX_PULSE_MS;
+  }
+}
+
+void serviceCapsPulse() {
+  if (!capsPulseActive) return;
+
+  if ((int32_t)(millis() - capsPulseReleaseAt) >= 0) {
+    int8_t slot = findSlotByKey(HID_KEY_CAPS_LOCK);
+    if (slot >= 0) clearSlot((uint8_t)slot);
+    capsPulseActive = false;
+  }
+}
+
+void triggerReset() {
+  const uint32_t now = millis();
+
+  clearAllSlots();
+  capsPulseActive = false;
+  capsUsbWasHeld = false;
+  RESET_ASSERT();
+  resetActive = true;
+  resetReleaseAt = now + RESET_PULSE_MS;
+
+  // Reboot the Pico only AFTER the TEC reset pulse has been released.
+  picoRebootPending = true;
+  picoRebootAt = now + RESET_PULSE_MS + PICO_REBOOT_AFTER_TEC_MS;
+}
+
+void serviceResetPulse() {
+  const uint32_t now = millis();
+
+  if (resetActive && (int32_t)(now - resetReleaseAt) >= 0) {
+    RESET_RELEASE();
+    resetActive = false;
+  }
+
+  if (picoRebootPending && (int32_t)(now - picoRebootAt) >= 0) {
+    // The TEC has already had its full reset pulse and GP27 is released.
+    // watchdog_reboot(0, 0, 0) performs a normal RP2040 reboot from flash.
+    picoRebootPending = false;
+    watchdog_reboot(0, 0, 0);
+
+    // Normally the reset occurs immediately. Do not resume USB/matrix-side
+    // housekeeping in the tiny interval before the watchdog reset takes effect.
+    while (true) { tight_loop_contents(); }
+  }
+}
+
+void armKeyboardReceive() {
+  if (!keyboardMounted) return;
+
+  // Ask TinyUSB for the endpoint's REAL state instead of trusting a software
+  // pending flag. During a normal long idle, the interrupt-IN endpoint remains
+  // busy waiting for the keyboard and we leave it alone. If PIO-USB/TinyUSB
+  // silently drops or aborts that transfer, the endpoint becomes ready and this
+  // code automatically queues a fresh receive request.
+  if (!tuh_hid_receive_ready(keyboardDevAddr, keyboardInstance)) return;
+
+  // If queuing transiently fails, loop1() will simply try again later.
+  tuh_hid_receive_report(keyboardDevAddr, keyboardInstance);
+}
+
+void serviceCapsLED() {
+  if (!keyboardMounted || !keyboardProtocolReady || capsReportBusy) return;
+
+  const uint32_t now = millis();
+  const bool healthProbeDue = ((int32_t)(now - nextUsbHealthProbe) >= 0);
+
+  // GP13 is optional. With no status bodge fitted its weak pull-down makes
+  // capsNow false; once the 10k/20k divider is fitted this becomes the real
+  // TEC Caps state and is mirrored to the USB keyboard LED.
+  const bool capsNow = gpio_get(CAPS_STATUS_PIN);
+  const bool capsNeedsSync = (!capsLedSynced || capsNow != lastCapsLedState);
+
+  if (!capsNeedsSync && !healthProbeDue) return;
+  if ((int32_t)(now - nextCapsReportAttempt) < 0) return;
+
+  // Start (or continue) a health window. If the control transfer cannot be
+  // queued/completed before this deadline, loop1() stops feeding the watchdog.
+  if (!usbHealthProbeActive) {
+    usbHealthProbeActive = true;
+    usbHealthDeadline = now + USB_HEALTH_TIMEOUT_MS;
+  }
+
+  keyboardLedReport = capsNow ? KEYBOARD_LED_CAPSLOCK : 0;
+
+  if (tuh_hid_set_report(keyboardDevAddr, keyboardInstance, 0,
+                         HID_REPORT_TYPE_OUTPUT,
+                         &keyboardLedReport, sizeof(keyboardLedReport))) {
+    capsReportBusy    = true;
+    capsStateInFlight = capsNow;
+  } else {
+    nextCapsReportAttempt = now + 10;
+  }
+}
+
 void processReport(hid_keyboard_report_t const *report) {
+  // ── VULCAN NERVE PINCH: Ctrl+Alt+Delete ────────────────────────────────
+  // This bypasses the matrix scan entirely. The reset output is independent
+  // of A8-A15 and is edge-triggered so holding the chord gives one reset.
+  // Version 6 retains the Pico reboot after the 100 ms TEC reset pulse has finished.
+  const bool ctrlHeld =
+      (report->modifier & (HID_MOD_LEFT_CTRL | HID_MOD_RIGHT_CTRL));
+  const bool altHeld =
+      (report->modifier & (HID_MOD_LEFT_ALT | HID_MOD_RIGHT_ALT));
+  const bool deleteHeld = reportContainsKey(report, HID_KEY_DELETE);
+  const bool vnpHeld = ctrlHeld && altHeld && deleteHeld;
+
+  if (vnpHeld) {
+    if (!vnpWasHeld) triggerReset();
+    vnpWasHeld = true;
+    return;  // suppress the Ctrl/Alt/Delete chord from the TEC matrix
+  }
+  vnpWasHeld = false;
+
+  // ── CAPS LOCK: one software-generated matrix pulse per USB press ─────────
+  // Do not expose Caps as a continuously-held TEC matrix switch. A rising
+  // USB key edge starts one short pulse; repeated HID reports while held are
+  // ignored until an actual USB release has been seen.
+  const bool capsHeld = reportContainsKey(report, HID_KEY_CAPS_LOCK);
+  if (capsHeld && !capsUsbWasHeld) {
+    startCapsPulse();
+  }
+  capsUsbWasHeld = capsHeld;
+
   // ── Step 1: build the list of currently-held key "tags" from this report ──
   // Each tag is either a HID keycode (0x00-0xFF) for a regular key, or a
   // modifier tag (SLOT_TAG_BIT | SK_SHIFT / SK_CTRL) for Shift/Ctrl.
@@ -402,8 +643,8 @@ void processReport(hid_keyboard_report_t const *report) {
   uint16_t heldKeys[2] = {0, 0};
   uint8_t heldCount = 0;
 
-  bool shiftHeld = (report->modifier & (HID_MOD_LEFT_SHIFT | HID_MOD_RIGHT_SHIFT));
-  bool ctrlHeld  = (report->modifier & (HID_MOD_LEFT_CTRL  | HID_MOD_RIGHT_CTRL));
+  const bool shiftHeld =
+      (report->modifier & (HID_MOD_LEFT_SHIFT | HID_MOD_RIGHT_SHIFT));
 
   // Modifiers are added first, since in a Shift+3 combo Mon3 expects the
   // modifier's row to be one of the two it picks up -- order they're added
@@ -415,6 +656,7 @@ void processReport(hid_keyboard_report_t const *report) {
   for (uint8_t i = 0; i < 6 && heldCount < 2; i++) {
     uint8_t kc = report->keycode[i];
     if (kc == 0x00) continue;
+    if (kc == HID_KEY_CAPS_LOCK) continue;  // handled by one-shot logic above
     heldKeys[heldCount++] = kc;  // plain HID keycode as the tag
   }
 
@@ -447,65 +689,191 @@ void processReport(hid_keyboard_report_t const *report) {
     }
   }
 
-  if (heldCount == 0) {
-    OE_DISABLE();
-    Serial.println("All keys released");
-  }
 }
 
 // ─── TinyUSB Callbacks ────────────────────────────────────────────────────────
 
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
                        uint8_t const *desc_report, uint16_t desc_len) {
-  Serial.print("USB keyboard connected. dev_addr=");
-  Serial.print(dev_addr);
-  Serial.print(" instance=");
-  Serial.println(instance);
-  tuh_hid_set_protocol(dev_addr, instance, HID_PROTOCOL_BOOT);
+  (void)desc_report;
+  (void)desc_len;
+
+  const uint8_t protocol = tuh_hid_interface_protocol(dev_addr, instance);
+
+  if (protocol == HID_ITF_PROTOCOL_KEYBOARD) {
+    keyboardDevAddr         = dev_addr;
+    keyboardInstance        = instance;
+    keyboardMounted         = true;
+    keyboardProtocolReady   = false;
+    capsReportBusy          = false;
+    capsLedSynced           = false;
+    nextCapsReportAttempt   = 0;
+    usbHealthProbeActive    = false;
+    usbHealthDeadline       = 0;
+    nextUsbHealthProbe      = millis() + USB_HEALTH_PROBE_MS;
+
+    // Use boot protocol so reports have the standard 8-byte keyboard format.
+    // Do not send the Caps LED SET_REPORT until the completion callback below
+    // confirms that this asynchronous control transfer has finished.
+    if (!tuh_hid_set_protocol(dev_addr, instance, HID_PROTOCOL_BOOT)) {
+      // If SET_PROTOCOL cannot even be queued, most boot keyboards are already
+      // usable in the required format.  Allow LED service later rather than
+      // hammering EP0 here; keyboard input reception is independent.
+      keyboardProtocolReady = true;
+    }
+
+    armKeyboardReceive();
+    return;
+  }
+
+  // Keep receiving on non-keyboard HID interfaces of composite devices.
   tuh_hid_receive_report(dev_addr, instance);
 }
 
+// TinyUSB host control-transfer completion callbacks.  These are deliberately
+// used to serialize keyboard LED SET_REPORT operations on endpoint zero.
+void tuh_hid_set_protocol_complete_cb(uint8_t dev_addr, uint8_t instance,
+                                      uint8_t protocol) {
+  (void)protocol;
+  if (keyboardMounted && dev_addr == keyboardDevAddr &&
+      instance == keyboardInstance) {
+    keyboardProtocolReady = true;
+    capsLedSynced = false;          // sync optional GP13 Caps state next
+    nextCapsReportAttempt = millis();
+  }
+}
+
+void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
+                                    uint8_t report_id, uint8_t report_type,
+                                    uint16_t len) {
+  (void)report_id;
+  (void)report_type;
+
+  if (keyboardMounted && dev_addr == keyboardDevAddr &&
+      instance == keyboardInstance) {
+    capsReportBusy = false;
+
+    // Any completed SET_REPORT proves the control endpoint and host task are
+    // still making forward progress, even if the device reports a short/failed
+    // transfer. Schedule the next periodic health probe from this completion.
+    usbHealthProbeActive = false;
+    usbHealthDeadline = 0;
+    nextUsbHealthProbe = millis() + USB_HEALTH_PROBE_MS;
+
+    if (len == sizeof(keyboardLedReport)) {
+      lastCapsLedState = capsStateInFlight;
+      capsLedSynced = true;
+    } else {
+      // Failed/stalled transfer: retry later rather than immediately.
+      capsLedSynced = false;
+      nextCapsReportAttempt = millis() + 20;
+    }
+  }
+}
+
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
-  Serial.println("USB keyboard disconnected.");
-  clearAllSlots();
+  if (keyboardMounted && dev_addr == keyboardDevAddr &&
+      instance == keyboardInstance) {
+    keyboardMounted         = false;
+    keyboardDevAddr         = 0;
+    keyboardInstance        = 0;
+    keyboardProtocolReady   = false;
+    capsReportBusy          = false;
+    capsLedSynced           = false;
+    usbHealthProbeActive    = false;
+    usbHealthDeadline       = 0;
+    nextUsbHealthProbe      = 0;
+    vnpWasHeld              = false;
+    capsUsbWasHeld          = false;
+    capsPulseActive         = false;
+    clearAllSlots();
+  }
 }
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                   uint8_t const *report, uint16_t len) {
-  if (len < sizeof(hid_keyboard_report_t)) {
+  // Only decode the boot-keyboard interface selected at mount time.
+  if (!keyboardMounted || dev_addr != keyboardDevAddr ||
+      instance != keyboardInstance) {
     tuh_hid_receive_report(dev_addr, instance);
     return;
   }
-  processReport(reinterpret_cast<hid_keyboard_report_t const *>(report));
-  tuh_hid_receive_report(dev_addr, instance);
+
+  // This interrupt-IN transfer has completed. Process the report, then ask
+  // TinyUSB whether the endpoint is ready for the next receive request.
+  if (len >= sizeof(hid_keyboard_report_t)) {
+    processReport(reinterpret_cast<hid_keyboard_report_t const *>(report));
+  }
+
+  armKeyboardReceive();
 }
 
-// ─── Core 1 — USB Host Task ───────────────────────────────────────────────────
-// NOTE: USBHost.begin() is called from setup() on Core 0 (not setup1()) --
-// the earlephilhower core does not reliably call setup1() in all versions,
-// see project history. loop1() is still used to service the USB task so it
-// doesn't compete with the time-critical loop() on Core 0.
+// ─── Core 1 — USB Host / slow auxiliary tasks ─────────────────────────────────
+// Core 1 owns USB, the non-blocking reset timer, and the TEC Caps status input.
+// None of this code participates in the sub-microsecond matrix response.
 
 void setup1() {}
 
 void loop1() {
+  // The watchdog is deliberately owned/fed by Core 1. Core 0's matrix hot loop
+  // can continue forever even if USB wedges, so feeding it from Core 0 would
+  // hide exactly the failure we are trying to recover from.
+  if (!watchdogStarted) {
+    watchdog_enable(USB_WATCHDOG_MS, true);
+    watchdogStarted = true;
+  }
+
+  // If USBHost.task() itself ever blocks permanently, execution never reaches
+  // watchdog_update() below and the RP2040 automatically reboots.
   USBHost.task();
+
+  armKeyboardReceive();       // re-arm whenever TinyUSB says endpoint is free
+  serviceResetPulse();
+  serviceCapsPulse();
+  serviceCapsLED();
+
+  bool usbHealthy = true;
+  if (keyboardMounted && usbHealthProbeActive &&
+      (int32_t)(millis() - usbHealthDeadline) >= 0) {
+    usbHealthy = false;
+  }
+
+  // No keyboard mounted is a valid state and must not cause reboot loops. When
+  // a keyboard IS mounted, an overdue control-transfer health probe intentionally
+  // stops the feed so the hardware watchdog gives us a clean Pico restart.
+  if (usbHealthy) {
+    watchdog_update();
+  }
 }
 
 // ─── Core 0 ───────────────────────────────────────────────────────────────────
 
 void setup() {
+  // USB CDC serial is optional debug only. Do NOT wait for a PC terminal:
+  // when powered from the TEC the keyboard interface must start immediately.
   Serial.begin(115200);
-  while (!Serial && millis() < 10000);
-  Serial.println("TEC-1G USB Keyboard Interface starting...");
 
-  // OE control for 74AHCT245 -- start disabled (HIGH) so the data bus
-  // is fully released until we actually have a key to assert.
+  // HCT245 /OE startup sequencing. External 10k pull-up to Pico 3V3 holds
+  // this HIGH before firmware runs. Preload the GPIO output latch HIGH before
+  // changing GP5 to an output so there is no brief enable glitch.
   gpio_init(OE_PIN);
+  gpio_put(OE_PIN, 1);
   gpio_set_dir(OE_PIN, GPIO_OUT);
-  OE_DISABLE();
 
-  // Address input pins -- pull-ups, Mon3 pulls one LOW at a time.
+  // Reset control via external open-drain/open-collector stage. Keep the gate/
+  // base drive LOW so reset is released.
+  gpio_init(RESET_PIN);
+  RESET_RELEASE();
+  gpio_set_dir(RESET_PIN, GPIO_OUT);
+
+  // Optional TEC Caps-status input. Keep a weak pull-down enabled so GP13 is
+  // defined even when the status bodge is absent. If the external 10k/20k
+  // divider is fitted, the TEC's HIGH level comfortably overrides this pull.
+  gpio_init(CAPS_STATUS_PIN);
+  gpio_set_dir(CAPS_STATUS_PIN, GPIO_IN);
+  gpio_pull_down(CAPS_STATUS_PIN);
+
+  // Address inputs -- pull-ups, Mon3 pulls one LOW at a time.
   // (ALL_ADDR_MASK / ALL_DATA_MASK are compile-time #defines now -- only the
   // per-pin arrays used by the slot-management code are built here.)
   for (uint8_t i = 0; i < 8; i++) {
@@ -515,129 +883,92 @@ void setup() {
     ADDR_PIN_MASK[i] = 1u << ADDR_PINS[i];
   }
 
-  // Data pins -- always OUTPUT mode. The 74AHCT245's OE pin controls whether
-  // these values actually reach the TEC-1G bus (OE HIGH = chip disabled,
-  // OE LOW = chip enabled). Default latch value is HIGH (1) on all pins so
-  // when OE is enabled the bus reads 0xFF (no key). Only the active key's
-  // bit is pulled LOW just before OE is enabled in the hot loop.
+  // Data pins are always outputs. /OE is still HIGH at this point, so the TEC
+  // sees nothing while the Pico initializes every latch to HIGH (0xFF).
   for (uint8_t i = 0; i < 8; i++) {
     gpio_init(DATA_PINS[i]);
     gpio_set_dir(DATA_PINS[i], GPIO_OUT);
-    gpio_put(DATA_PINS[i], 1);              // latch HIGH = 0xFF default
+    gpio_put(DATA_PINS[i], 1);
     DATA_PIN_MASK[i] = 1u << DATA_PINS[i];
   }
 
-  // Initialise USB host on Core 0 (setup1 not reliable on earlephilhower)
+  // Initialise USB host on Core 0 (setup1 not reliable on earlephilhower).
   USBHost.begin(1);  // rhport 1 = PIO-USB on GP0/GP1
 
-  Serial.println("Ready -- plug in USB keyboard.");
+  // All data latches are now known-good. Enable the HCT245 ONCE and leave it
+  // enabled forever; the TEC's own 245 controls connection to the Z80 bus.
+  OE_ENABLE();
+
 }
 
 // =============================================================================
-// loop() -- THE HOT PATH. Runs continuously from RAM (__not_in_flash_func),
-// and must complete its useful work well within Mon3's data-setup budget:
-// Mon3 samples each matrix row ONCE per scan pass (single IN A,(C) per row,
-// no retry), latching the data bus ~600-750ns after the address lines change
-// (IN A,(C) = 12 cycles @ 4MHz = 3us total, but the address is only valid
-// ~2.5-3 cycles before the data sample point).
+// loop() -- THE HOT PATH. Runs continuously from RAM (__not_in_flash_func).
 //
-// ADDRESS QUALIFICATION:
-//   A8-A15 are wired directly off the Z80 address bus via transistors, so
-//   they are NOT exclusively driven during the deliberate IN A,(C) keyboard
-//   scan -- they fluctuate any time the Z80's address bus happens to match
-//   that bit pattern for an unrelated reason (other instruction fetches,
-//   memory access, etc). IORQ and the port-number byte (which would let us
-//   qualify "this is really an IO read of port 0xFE") are not broken out
-//   on this board, so we can't gate on those directly.
+// IMPORTANT ARDUINO-CORE DETAIL:
+//   The Earle Philhower Arduino core normally executes:
 //
-//   Instead we exploit how Mon3's real scan behaves: while it's actively
-//   scanning the keyboard, EXACTLY ONE of A8-A15 is low and the other
-//   seven are high, and this repeats continuously in a tight loop. Random
-//   bus glitching from unrelated activity is very unlikely to produce that
-//   exact one-bit-low / seven-bits-high pattern on this specific group of
-//   eight lines at the moment we sample them.
+//       loop();
+//       __loop();
 //
-// TWO-KEY SUPPORT:
-//   Mon3's matrix scan can pick up 2 simultaneously-held keys across one
-//   full A8-A15 scan cycle (e.g. Shift+3), since it scans each row in turn
-//   and records whichever rows show a low data bit. The Pico doesn't need
-//   to know which slot is "the modifier" -- it only needs to correctly
-//   present BOTH held keys' matrix connections, each on its own row, as
-//   Mon3's scan visits that row. Mon3 decides on its own, after the full
-//   scan, how to interpret having seen two keys (e.g. Shift+3 -> '#').
+//   and with USE_TINYUSB enabled __loop() calls yield(). Returning from loop()
+//   after each GPIO sample therefore inserts non-deterministic housekeeping gaps
+//   into the matrix polling. A missed matrix row looks like a key release to
+//   MON3; the next successful row then looks like a new press. That produces
+//   very fast apparent repeat and can make Caps Lock toggle repeatedly.
 //
-//   Both slots are tested against the SAME address-bus read every loop
-//   iteration. Since Mon3 can only have one row active at a time, at most
-//   one slot will match on any given iteration in normal operation -- but
-//   each slot is checked independently and safely regardless.
+//   Therefore this loop deliberately NEVER RETURNS. It contains its own tight
+//   infinite polling loop on Core 0. USB HOST work, Caps LED mirroring and the
+//   VNP reset timer all continue independently on Core 1.
 //
-// Per iteration, this does:
-//   2 loads (activeMatchPattern[0..1])  -- the only cross-core state read
-//   1 read  (sio_hw->gpio_in)           -- all GPIO pins, one cycle
-//   1 AND   (extract watched address bits, compile-time mask)
-//   2 compares (one per slot) + gate compare
-//   ~3 SIO writes                       -- only on an actual bus state change
-// ~15-25 instructions total (~150-250ns worst case), roughly 3x inside the
-// budget -- the previous version recomputed the match patterns and reloaded
-// the aggregate masks every iteration, which sat within ~100ns of the limit
-// and dropped rows under USB/cache jitter. Still no function calls, no
-// array loops, no Serial in the hot path.
+// PHYSICAL-MATRIX RULE:
+//   USB HID reports are treated only as CURRENT KEY STATE. No typematic/repeat
+//   pulses are generated for ordinary keys. A normal USB key held down remains a
+//   continuously closed virtual matrix switch until physically released.
+//   CAPS LOCK is the deliberate exception in Version 6: one short matrix pulse is
+//   generated on the USB press edge, preventing MON3 from repeatedly toggling
+//   Caps while the PC key is held.
+//
+// FREEZE / FAIL-SAFE RULE:
+//   - D0-D7 are reconsidered ONLY when the observed A8-A15 value changes.
+//   - While A8-A15 remains unchanged, D0-D7 are frozen completely. A USB HID
+//     report arriving on Core 1 therefore cannot alter the byte mid-read.
+//   - On every A8-A15 transition, compare the new value with the two active
+//     matrix-row match patterns. If neither matches, present 0xFF immediately.
+//   - If one or both slots match, present their active-low data bit(s).
+//
+// The HCT245 stays enabled; the TEC's own buffer determines when these
+// keyboard-return signals actually reach the Z80 data bus.
 // =============================================================================
 
 void __not_in_flash_func(loop)() {
-  // Persisted across iterations -- the bus state we are CURRENTLY presenting.
-  //   drivenMask = data bits currently held LOW (0 = nothing driven)
-  //   oeOn       = whether the 74AHCT245 is currently enabled
-  // We only ever TOUCH the bus when the desired state differs from this, so a
-  // steady held row is left completely alone (no per-iteration set/clr glitch,
-  // no OE chatter). Every write to the data latches is done while OE is
-  // DISABLED, so a data bit can never be driven HIGH onto an enabled bus.
-  static uint32_t drivenMask = 0;
-  static bool     oeOn       = false;
+  // Last observed upper-address pattern. As long as A8-A15 are unchanged,
+  // the presented D0-D7 byte cannot change.
+  uint32_t lastAddrBits = 0xFFFFFFFFu;
 
-  // EMPTY_MATCH in a slot means "slot empty" -- and because the address read
-  // below is masked to ALL_ADDR_MASK, an empty slot can never match it.
-  const uint32_t match0 = activeMatchPattern[0];
-  const uint32_t match1 = activeMatchPattern[1];
+  // DATA GPIO bits currently held LOW. setup() starts all eight HIGH.
+  uint32_t drivenMask = 0;
 
-  if (match0 == EMPTY_MATCH && match1 == EMPTY_MATCH) {
-    if (oeOn) { OE_DISABLE(); oeOn = false; drivenMask = 0; }
-    return;
+  // Never return to the Arduino core. In particular, do not allow the core's
+  // post-loop yield() to insert timing holes into matrix polling.
+  for (;;) {
+    const uint32_t addrBits = sio_hw->gpio_in & ALL_ADDR_MASK;
+
+    // Same upper address as previous sample: freeze D0-D7 completely.
+    if (addrBits == lastAddrBits) continue;
+    lastAddrBits = addrBits;
+
+    // Snapshot Core 1's published held-key state only on an address change.
+    const uint32_t match0 = activeMatchPattern[0];
+    const uint32_t match1 = activeMatchPattern[1];
+
+    uint32_t wantMask = 0;
+    if (addrBits == match0) wantMask  = activeDataMask[0];
+    if (addrBits == match1) wantMask |= activeDataMask[1];
+
+    // A non-key row is 0xFF (no columns low). gpio_togl changes all required
+    // data bits atomically in one SIO write, with no intermediate 0xFF state.
+    const uint32_t changeMask = drivenMask ^ wantMask;
+    if (changeMask) sio_hw->gpio_togl = changeMask;
+    drivenMask = wantMask;
   }
-
-  const uint32_t addrBits = sio_hw->gpio_in & ALL_ADDR_MASK;
-
-  // ── Which slot(s) match the current address scan row ──────────────────
-  // Strict per-row matching stays: each key's column is only pulled low on
-  // ITS OWN row, exactly like the real matrix switch (row<->col). At most
-  // one slot matches per iteration since Mon3 drives one row low at a time
-  // (two keys sharing one row legitimately match together and OR their bits).
-  uint32_t wantMask = 0;
-  if (addrBits == match0) wantMask  = activeDataMask[0];
-  if (addrBits == match1) wantMask |= activeDataMask[1];
-
-  // ── STATE-CHANGE GATE: nothing to do if the bus already shows this ─────
-  if (wantMask == drivenMask && oeOn == (wantMask != 0)) return;
-
-  if (wantMask == 0) {
-    // Leaving a key row -> release the bus FIRST, then restore latches HIGH
-    // (safe now: bus is high-Z, Mon3's pull-ups hold 0xFF). Releasing fast
-    // matters: the Z80 is already fetching the next instruction, and every
-    // cycle we keep driving the bus is a cycle of potential contention.
-    OE_DISABLE();
-    oeOn = false;
-    sio_hw->gpio_set = ALL_DATA_MASK;
-    drivenMask = 0;
-    return;
-  }
-
-  // Entering / changing a key row. Build the latch pattern while OE is
-  // DISABLED so no bit is ever driven HIGH onto a live bus, then enable OE
-  // LAST -- the bus makes exactly one clean 0xFF -> key-pattern transition.
-  if (oeOn) { OE_DISABLE(); oeOn = false; }   // only if it was live
-  sio_hw->gpio_set = ALL_DATA_MASK;           // all latches high
-  sio_hw->gpio_clr = wantMask;                // pull the active bit(s) low
-  OE_ENABLE();                                // present the pattern
-  oeOn = true;
-  drivenMask = wantMask;
 }
