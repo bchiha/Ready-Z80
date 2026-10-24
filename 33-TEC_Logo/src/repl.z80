@@ -1,0 +1,494 @@
+; Logo REPL: type a line, press CR, it runs
+; -----------------------------------------
+
+; logoRepl is the whole interactive program.  Call it once; it returns (with RET)
+; when the user types BYE.
+;
+;     ?  FD 10                    "? " is the prompt for a new entry
+;     ?  REPEAT 4 [               an open [ or TO ... asks for more:
+;     >    FD 10 RT 90            "> " is the continuation prompt
+;     >  ]                        the entry is complete and runs
+;     ?  BYE
+;
+; Typed text is collected in TEXT_BUF.  After every CR the text is lexed and the
+; brackets and TO/END are counted: while a [ or a TO is still open the entry is
+; not complete, so the next line is added to it.  When it is complete, runLine
+; compiles and runs it.  Variables, procedures and the turtle live on between
+; entries.
+;
+; Keys:   CR or LF    end of line (CR LF counts as one)
+;         Backspace   rub out the last character of the CURRENT line (DEL too)
+;         Esc, Ctrl-C throw away the whole entry, including earlier lines of it
+;         Tab         is typed as a space
+; Commands, recognised only as the first line of an entry, any case:
+;         BYE         leave the REPL
+;         NEW         forget all variables and procedures, clear the screen
+; An entry can be about 500 characters long (all its lines together); past that
+; extra characters are ignored and the terminal beeps.
+;
+; An IF ... [ then ] must have its [ else ] on the same line as the then-block's
+; closing ], because an entry is complete as soon as its brackets balance.
+;
+; Serial I/O is MON3's API:  ld c,N / rst 10h.   Every routine below that talks
+; to it clobbers C.
+
+; ---------------------------------------------------------------------------
+; The loop
+; ---------------------------------------------------------------------------
+
+logoRepl:
+        ld (REPL_SP), sp        ; an error comes back to here (see replRecover)
+        ld c, SER_INIT
+        rst 10h                 ; destroys A
+        call logoInit
+        call defsClear
+        xor a
+        ld (TRACE_ON), a        ; the disassembler trace starts off
+        call lcdInit
+        ld hl, msgBanner
+        call serStr
+        call entryClear
+replLoop:
+        ld hl, (TEXT_PTR)
+        ld de, TEXT_BUF
+        or a
+        sbc hl, de
+        ld hl, msgPrompt        ; nothing typed yet: a new entry
+        jr z, replShow
+        ld hl, msgMore          ; otherwise we are inside one
+replShow:
+        call serStr
+        call readLine           ; A = 1 when the entry was cancelled
+        or a
+        jr nz, replCancel
+        ; BYE and NEW only count as the first line of an entry
+        ld hl, (LINE_START)
+        ld de, TEXT_BUF
+        or a
+        sbc hl, de
+        jp nz, replCheck
+        ld hl, TEXT_BUF
+        ld de, cmdBye
+        call matchCmd
+        jp z, replBye
+        ld hl, TEXT_BUF
+        ld de, cmdNew
+        call matchCmd
+        jp z, replNew
+        ld hl, TEXT_BUF
+        ld de, cmdList
+        call matchHead
+        jp z, replList
+        ld hl, TEXT_BUF
+        ld de, cmdErase
+        call matchHead
+        jp z, replErase
+        ld hl, TEXT_BUF
+        ld de, cmdTrace
+        call matchCmd
+        jp z, replTrace
+replCheck:
+        call entryStatus        ; 0 = blank, 1 = needs more, 2 = ready
+        or a
+        jr z, replDone
+        cp 1
+        jp z, replLoop          ; ask for another line
+        call defsEntry          ; store and build any TO ... END in the entry
+        ld de, TEXT_BUF
+        call runLine            ; what is left of it
+replDone:
+replCancel:
+        call entryClear
+        jp replLoop
+replNew:
+        call logoInit
+        call defsClear
+        call lcdInit
+        call entryClear
+        jp replLoop
+; LIST  shows every procedure's text, LIST name just one
+replList:
+        ld a, (hl)
+        or a
+        jr z, lstAll
+        call getName
+        jr c, lstOne
+        ld iy, ERR_DEF_UNK
+        jp errorHandler
+lstOne:
+        call defsFind
+        jr c, lstHave
+        ld iy, ERR_DEF_UNK
+        jp errorHandler
+lstHave:
+        call defsPrint
+        jp replDone
+lstAll:
+        ld hl, DEFS_BUF
+lstLoop:
+        call defsMore
+        jp nc, replDone
+        ld a, (hl)
+        or a
+        jr nz, lstNext
+        push hl
+        call defsPrint
+        pop hl
+lstNext:
+        call defsNext
+        jr lstLoop
+
+; ERASE name  forgets a procedure (one that others still call can't be erased)
+replErase:
+        call getName
+        jr c, ersName
+        ld iy, ERR_DEF_UNK
+        jp errorHandler
+ersName:
+        call defsFind
+        jr c, ersHave
+        ld iy, ERR_DEF_UNK
+        jp errorHandler
+ersHave:
+        set 0, (hl)             ; replaced by nothing; defsCommit makes it final
+        ld a, 1
+        ld (DEFS_DIRTY), a
+        call defsCommit
+        jp replDone
+
+; TRACE  turns the disassembler trace on or off: while it is on, every
+; instruction is printed just before the VM runs it
+replTrace:
+        ld a, (TRACE_ON)
+        xor 1
+        ld (TRACE_ON), a
+        ld hl, msgTraceOn
+        jr nz, trSay
+        ld hl, msgTraceOff
+trSay:
+        call serStr
+        jp replDone
+
+replBye:
+        ld hl, msgBye
+        call serStr
+        ret
+
+msgBanner:      db "TEC Logo by Brian Chiha...   BYE exits, NEW starts again", 13, 10, 0
+msgPrompt:      db "? ", 0
+msgMore:        db "> ", 0
+msgBye:         db "Bye", 13, 10, 0
+cmdBye:         db "BYE", 0
+cmdNew:         db "NEW", 0
+cmdTrace:       db "TRACE", 0
+msgTraceOn:     db "Disassembler ON", 13, 10, 0
+msgTraceOff:    db "Disassembler OFF", 13, 10, 0
+cmdList:        db "LIST", 0
+cmdErase:       db "ERASE", 0
+msgReset:       db "Internal error - everything has been reset", 13, 10, 0
+
+; entryClear - start a new, empty entry
+entryClear:
+        ld hl, TEXT_BUF
+        ld (TEXT_PTR), hl
+        ld (LINE_START), hl
+        ld (hl), 0
+        ; fall through: remember the state the new entry starts from
+
+; snapState - note how many variables and procedures exist, and where the
+; procedure code ends, so that a failed entry can be undone by replRecover
+snapState:
+        ld a, (SLOT_COUNT)
+        ld (SNAP_SLOTS), a
+        ld a, (PROC_COUNT)
+        ld (SNAP_PROCS), a
+        ld hl, (PROC_CODE_PTR)
+        ld (SNAP_CODE), hl
+        xor a
+        ld (DEFS_DIRTY), a
+        ret
+
+; replRecover - an error was reported: undo the entry and go back to the prompt
+; Reached by JP from errorHandler (never called), after the message is printed.
+; The entry is all-or-nothing: whatever it half-registered is thrown away, but
+; everything the earlier entries left behind (procedures, variables, the
+; turtle, the picture) stays.
+replRecover:
+        ld sp, (REPL_SP)        ; drop whatever the failed code had on the stack
+        ld a, (RECOVERING)
+        or a
+        jr nz, rrFatal          ; an error while recovering: start again
+        inc a
+        ld (RECOVERING), a
+        call vmUnwind           ; variables get back what cut-short calls had changed
+        xor a
+        ld (IN_PROC), a         ; a TO that never reached its END
+        ld a, 2
+        call defsCompact        ; forget definitions this entry stored, revive the
+                                ; ones it replaced
+        ld a, (SNAP_PROCS)
+        ld (PROC_COUNT), a      ; forget procedures this entry registered
+        ld hl, (SNAP_CODE)
+        ld (PROC_CODE_PTR), hl  ; and any code it compiled for them
+        ld a, (SNAP_SLOTS)
+        ld (SLOT_COUNT), a      ; forget variables this entry introduced
+        ld c, a
+        ld b, 0
+        ld hl, VARVALUES
+        add hl, bc
+        add hl, bc              ; HL = value of the first slot to forget
+        ld a, MAX_SLOTS
+        sub c
+        jr z, rrDone
+        add a, a
+        ld b, a                 ; two bytes per slot
+rrZero:
+        ld (hl), 0              ; so a new variable never starts with an old value
+        inc hl
+        djnz rrZero
+rrDone:
+        ld a, (DEFS_DIRTY)
+        or a
+        call nz, defsRebuild    ; the entry changed the definitions: rebuild the old ones
+        xor a
+        ld (RECOVERING), a
+        call entryClear
+        jp replLoop
+rrFatal:
+        ld hl, msgReset
+        call serStr
+        call logoInit
+        call defsClear
+        call entryClear
+        jp replLoop
+
+; entryStatus - is the text in TEXT_BUF a complete entry?
+; Lexes it and counts [ against ] and TO against END.
+; Output: A = 0  nothing but blanks
+;         A = 1  a [ or a TO is still open: more lines are needed
+;         A = 2  complete (more ] or END than openers counts as complete too, so
+;                the parser can report it)
+; Clobbers everything.  A lexer error goes to errorHandler as usual.
+entryStatus:
+        ld hl, TOKEN_BASE
+        ld (TOKEN_PTR), hl
+        ld de, TEXT_BUF
+        call lex
+        ld hl, TOKEN_BASE
+        ld (TOKEN_PTR), hl
+        ld bc, 0                ; B = [ depth, C = TO depth
+        ld d, 0                 ; D = 1 once there is a token
+esLoop:
+        call peek
+        cp TOK_EOF
+        jr z, esDone
+        ld d, 1
+        cp TOK_LBRACKET
+        jr z, esLb
+        cp TOK_RBRACKET
+        jr z, esRb
+        cp TOK_TO
+        jr z, esTo
+        cp TOK_END
+        jr nz, esNext
+        dec c
+        jr esNext
+esLb:
+        inc b
+        jr esNext
+esRb:
+        dec b
+        jr esNext
+esTo:
+        inc c
+esNext:
+        call advance
+        jr esLoop
+esDone:
+        ld a, d
+        or a
+        ret z                   ; blank
+        ld a, b
+        or a
+        jr z, esB0
+        bit 7, a
+        jr nz, esReady          ; too many ]
+        jr esMore
+esB0:
+        ld a, c
+        or a
+        jr z, esReady
+        bit 7, a
+        jr nz, esReady          ; too many END
+esMore:
+        ld a, 1
+        ret
+esReady:
+        ld a, 2
+        ret
+
+; ---------------------------------------------------------------------------
+; Reading a line
+; ---------------------------------------------------------------------------
+
+; readLine - read one line, adding it to the text at TEXT_PTR
+; Each key is echoed.  At the end of the line a LF separator and a zero are
+; added, and TEXT_PTR points at that zero.
+; Output: A = 0 the line is in, A = 1 the entry was cancelled (Esc or Ctrl-C)
+readLine:
+        ld hl, (TEXT_PTR)
+        ld (LINE_START), hl
+rlLoop:
+        call serGet
+        cp 13
+        jr z, rlCR
+        cp 10
+        jr z, rlLF
+        ld b, a
+        xor a
+        ld (LAST_CR), a         ; any other key: the last CR is old news
+        ld a, b
+        cp 3
+        jr z, rlCancel
+        cp 27
+        jr z, rlCancel
+        cp 8
+        jr z, rlBack
+        cp 127
+        jr z, rlBack
+        cp 9
+        jr nz, rlKey
+        ld a, 32                ; tab -> space
+rlKey:
+        cp 32
+        jr c, rlLoop            ; other control keys: ignored
+        cp 127
+        jr nc, rlLoop           ; and anything past DEL
+        ld b, a
+        call roomForChar
+        jr nc, rlFull
+        ld hl, (TEXT_PTR)
+        ld (hl), b
+        inc hl
+        ld (TEXT_PTR), hl
+        ld a, b
+        call serPut             ; echo
+        jr rlLoop
+rlFull:
+        ld a, 7                 ; bell: the entry is full
+        call serPut
+        jr rlLoop
+rlBack:
+        ld hl, (TEXT_PTR)
+        ld de, (LINE_START)
+        or a
+        sbc hl, de
+        jr z, rlLoop            ; nothing left on this line to rub out
+        ld hl, (TEXT_PTR)
+        dec hl
+        ld (TEXT_PTR), hl
+        ld a, 8
+        call serPut
+        ld a, 32
+        call serPut
+        ld a, 8
+        call serPut
+        jr rlLoop
+rlLF:
+        ld a, (LAST_CR)
+        or a
+        jr z, rlEnd             ; a lone LF ends a line
+        xor a
+        ld (LAST_CR), a         ; the LF of a CR LF pair: ignore it
+        jr rlLoop
+rlCR:
+        ld a, 1
+        ld (LAST_CR), a
+rlEnd:
+        call serCRLF
+        ld hl, (TEXT_PTR)
+        ld (hl), 10             ; separator between the lines of an entry
+        inc hl
+        ld (hl), 0
+        ld (TEXT_PTR), hl
+        xor a
+        ret
+rlCancel:
+        call serCRLF
+        ld a, 1
+        ret
+
+; roomForChar - is there space for one more character in TEXT_BUF?
+; Output: carry set when there is (4 bytes are kept back for the separator)
+roomForChar:
+        ld hl, (TEXT_PTR)
+        ld de, 4
+        add hl, de
+        ld a, h
+        cp TEXT_END_HI
+        ret
+
+; matchCmd - is the text exactly this word (any case), apart from blanks?
+; Input : HL = the text, zero terminated; DE = the word, UPPER case, zero terminated
+; Output: Z set when it matches.  Clobbers A, B, DE, HL.
+matchCmd:
+        call skipBlanks
+mcLoop:
+        ld a, (de)
+        or a
+        jr z, mcEnd
+        ld b, a
+        ld a, (hl)
+        and 0DFh                ; to upper case
+        cp b
+        ret nz
+        inc hl
+        inc de
+        jr mcLoop
+mcEnd:
+        call skipBlanks
+        ld a, (hl)
+        or a                    ; Z when that is the end of the text
+        ret
+
+; skipBlanks - HL moves past spaces, tabs and line ends
+skipBlanks:
+        ld a, (hl)
+        or a
+        ret z
+        cp 33
+        ret nc
+        inc hl
+        jr skipBlanks
+
+; ---------------------------------------------------------------------------
+; Serial port (MON3 API)
+; ---------------------------------------------------------------------------
+
+; serPut - send the character in A.  Clobbers C.
+serPut:
+        ld c, SER_PUT
+        rst 10h
+        ret
+
+; serStr - send the zero terminated string at HL.  Clobbers C.
+serStr:
+        ld c, SER_STR
+        rst 10h
+        ret
+
+; serGet - wait for a character; A = the character.  Clobbers C.
+; A zero byte is ignored (it would mean "nothing typed").
+serGet:
+        ld c, SER_GET
+        rst 10h
+        or a
+        jr z, serGet
+        ret
+
+; serCRLF - start a new line on the terminal
+serCRLF:
+        ld a, 13
+        call serPut
+        ld a, 10
+        jp serPut

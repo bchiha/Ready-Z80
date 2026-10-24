@@ -1,0 +1,43 @@
+; LOGO Programming Language Compiler for the TEC-1G
+; -------------------------------------------------
+
+        ORG 4000h
+
+        ld (ORIG_SP), sp
+        ld sp, STACK_TOP
+        call logoRepl           ; returns when the user types BYE
+        ld sp, (ORIG_SP)
+        ret
+
+; logoInit - once, at start-up (and later for NEW): forget everything.
+; Variables = 0, no procedures, GLCD set up, turtle at home with the pen down.
+logoInit:
+        call parserInit
+        call codegenInit
+        jp vmInit
+
+; runLine - compile and run one piece of source text.
+; Input : DE = the text, zero terminated
+; Variables, procedures and the turtle stay as the earlier lines left them.
+; Procedures defined by this line are compiled into the permanent area; its
+; other statements are compiled into the scratch area and run once.
+runLine:
+        ld hl, TOKEN_BASE
+        ld (TOKEN_PTR), hl
+        call lex                ; DE = the source text
+        call parseProgram
+        call genProgram
+        jp vmRun
+
+
+.include "globals.z80"
+.include "error_handler.z80"
+.include "lexer.z80"
+.include "parser.z80"
+.include "codegen.z80"
+.include "disassembler.z80"
+.include "vm.z80"
+.include "turtle.z80"
+.include "repl.z80"
+.include "definitions.z80"
+.include "lcd.z80"

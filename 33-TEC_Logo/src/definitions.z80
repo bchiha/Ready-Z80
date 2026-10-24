@@ -1,0 +1,477 @@
+; Stored definitions: redefine, LIST and ERASE procedures
+; --------------------------------------------------------
+;
+; The source text of every TO ... END is kept in DEFS_BUF.  Procedure code is
+; always built FROM that text (defsRebuild), so a procedure can be replaced or
+; erased by changing the text and rebuilding all of them, in their original
+; order.  Variables keep their slots and values; only procedure code is redone.
+;
+; One stored definition:   [flag][NAME][text]
+;     flag   bit 1 = made by the entry now running,
+;            bit 0 = replaced or erased by it (dead as soon as it is final)
+;            so 0 = old and live, 1 = old but being replaced, 2 = new, 3 = new but
+;            replaced again by the same entry
+;     NAME   upper case letters, bit 7 set on the last one (like every name)
+;     text   "TO name ... END" exactly as typed (lines separated by LF), then 0
+; DEFS_END points just past the last one.
+;
+; A new version of a procedure is inserted where the old one stood, so the
+; order in which things are compiled (a procedure can only call earlier ones)
+; never changes.  If the entry fails, defsCompact with mask 2 throws the new
+; ones away and revives the old ones; if it works, mask 1 throws the old ones away.
+
+; defsClear - no definitions
+defsClear:
+        ld hl, DEFS_BUF
+        ld (DEFS_END), hl
+        xor a
+        ld (DEFS_DIRTY), a
+        ld (RECOVERING), a
+        ret
+
+; defsMore - is HL still inside the stored definitions?
+; Out: carry set when HL < DEFS_END.  HL kept, DE clobbered.
+defsMore:
+        ld de, (DEFS_END)
+        push hl
+        or a
+        sbc hl, de
+        pop hl
+        ret
+
+; defsNext - HL = a stored definition; on return HL = the one after it
+defsNext:
+        inc hl                  ; the flag
+dnName:
+        ld a, (hl)
+        inc hl
+        rla                     ; bit 7 (end of the name) into carry
+        jr nc, dnName
+dnText:
+        ld a, (hl)
+        inc hl
+        or a
+        jr nz, dnText
+        ret
+
+; defsFind - find the live definition called DEF_NAME
+; Out: carry set and HL = the definition when found; carry clear when not
+defsFind:
+        ld hl, DEFS_BUF
+dfLoop:
+        call defsMore
+        ret nc
+        bit 0, (hl)
+        jr nz, dfNext           ; one being replaced: ignore
+        push hl
+        inc hl
+        ld de, DEF_NAME
+        call nameEqual          ; Z when the names are the same
+        pop hl
+        jr z, dfFound
+dfNext:
+        call defsNext
+        jr dfLoop
+dfFound:
+        scf
+        ret
+
+; getName - read a procedure name (letters only) into DEF_NAME
+; In : HL = text.  Out: carry set if there was a name, HL just past it.
+; More than 8 letters is ERR_LEX_ST, as in the lexer.
+getName:
+        ld de, DEF_NAME
+        ld b, 0
+gnLoop:
+        ld a, (hl)
+        call isAlpha
+        jr nc, gnEnd
+        ld a, b
+        cp 8
+        jr nz, gnRoom
+        ld iy, ERR_LEX_ST
+        jp errorHandler
+gnRoom:
+        ld a, (hl)
+        res 5, a                ; upper case
+        ld (de), a
+        inc de
+        inc hl
+        inc b
+        jr gnLoop
+gnEnd:
+        ld a, b
+        or a
+        ret z                   ; no letters (carry is clear)
+        dec de
+        ld a, (de)
+        set 7, a
+        ld (de), a
+        scf
+        ret
+
+; wordIs - does the run of letters at HL spell the word at DE?
+; The word is upper case, zero terminated.  Z when it does.  HL kept.
+wordIs:
+        push hl
+wiLoop:
+        ld a, (de)
+        or a
+        jr z, wiEnd
+        ld b, a
+        ld a, (hl)
+        and 0DFh                ; to upper case
+        cp b
+        jr nz, wiNo
+        inc hl
+        inc de
+        jr wiLoop
+wiEnd:
+        ld a, (hl)
+        call isAlpha            ; more letters = a longer word
+        jr c, wiNo
+        pop hl
+        xor a
+        ret
+wiNo:
+        pop hl
+        or 1
+        ret
+
+; skipRun - HL moves past a run of letters
+skipRun:
+        ld a, (hl)
+        call isAlpha
+        ret nc
+        inc hl
+        jr skipRun
+
+wdTO:   db "TO", 0
+wdEND:  db "END", 0
+
+; defsApply - store the definitions found in the entry in TEXT_BUF
+; Every TO ... END is copied into DEFS_BUF (replacing an older one with the same
+; name) and blanked out of TEXT_BUF, so that runLine only sees what is left.
+; Out: A = how many definitions were stored.  Nothing is compiled yet.
+; Errors: TO without a name, TO inside a TO, no END, buffer full.
+defsApply:
+        xor a
+        ld (DEF_COUNT), a
+        ld hl, TEXT_BUF
+        ld c, 32                ; C = the character before the next word
+apScan:
+        ld a, (hl)
+        or a
+        jp z, apDone
+        call isAlpha
+        jr c, apWord
+        ld c, a
+        inc hl
+        jr apScan
+apWord:
+        ld a, c
+        cp 22h                  ; "WORD and :WORD are never keywords
+        jr z, apOther
+        cp ':'
+        jr z, apOther
+        ld de, wdTO
+        call wordIs
+        jr z, apTo
+apOther:
+        call skipRun
+        ld c, 'a'
+        jr apScan
+apTo:
+        ld (DEF_S), hl
+        inc hl
+        inc hl                  ; past TO
+        call skipBlanks
+        call getName
+        jr c, apNamed
+        ld iy, ERR_PAR_TON
+        jp errorHandler
+apNamed:
+        ld c, 'a'
+apEnd:
+        ld a, (hl)
+        or a
+        jr nz, apEnd1
+        ld iy, ERR_PAR_PEN      ; the text ran out before END
+        jp errorHandler
+apEnd1:
+        call isAlpha
+        jr c, apEw
+        ld c, a
+        inc hl
+        jr apEnd
+apEw:
+        ld a, c
+        cp 22h
+        jr z, apEskip
+        cp ':'
+        jr z, apEskip
+        ld de, wdEND
+        call wordIs
+        jr z, apGotEnd
+        ld de, wdTO
+        call wordIs
+        jr nz, apEskip
+        ld iy, ERR_PAR_NES      ; a TO inside a TO
+        jp errorHandler
+apEskip:
+        call skipRun
+        ld c, 'a'
+        jr apEnd
+apGotEnd:
+        inc hl
+        inc hl
+        inc hl                  ; past END
+        ld (DEF_E), hl
+        call defsStore
+        ld hl, (DEF_E)
+        ld c, 32
+        jp apScan
+apDone:
+        ld a, (DEF_COUNT)
+        ret
+
+; defsStore - copy TEXT_BUF[DEF_S .. DEF_E) into DEFS_BUF as DEF_NAME and blank
+; it out of TEXT_BUF.  An older definition of the same name is marked as
+; replaced and the new one goes in front of it; otherwise it goes on the end.
+defsStore:
+        ld a, 1
+        ld (DEFS_DIRTY), a
+        ld hl, (DEF_E)
+        ld de, (DEF_S)
+        or a
+        sbc hl, de
+        ld (DEF_LEN), hl        ; length of the text
+        ld b, 0                 ; B = letters in the name
+        ld hl, DEF_NAME
+dsCount:
+        inc b
+        ld a, (hl)
+        inc hl
+        rla
+        jr nc, dsCount
+        ld hl, (DEF_LEN)
+        ld c, b
+        ld b, 0
+        add hl, bc
+        inc hl
+        inc hl                  ; + flag + terminator
+        ld (DS_TOTAL), hl       ; the whole stored entry
+        ld bc, (DEFS_END)
+        add hl, bc
+        ld a, h
+        cp DEFS_LIMIT_HI
+        jr c, dsRoom
+        ld iy, ERR_DEF_FUL
+        jp errorHandler
+dsRoom:
+        call defsFind
+        jr c, dsInsert
+        ld hl, (DEFS_END)       ; a new name: it goes on the end
+        ld (DS_POS), hl
+        jr dsWrite
+dsInsert:
+        ld (DS_POS), hl         ; the old one's place: move it and all after it up
+        ex de, hl               ; DE = old
+        ld hl, (DEFS_END)
+        or a
+        sbc hl, de              ; HL = bytes to move
+        ld b, h
+        ld c, l
+        ld hl, (DEFS_END)
+        dec hl                  ; last byte now
+        ld de, (DS_TOTAL)
+        add hl, de
+        ex de, hl               ; DE = where that byte goes
+        ld hl, (DEFS_END)
+        dec hl
+        ld a, b
+        or c
+        jr z, dsMoved
+        lddr
+dsMoved:
+        ld hl, (DS_POS)
+        ld de, (DS_TOTAL)
+        add hl, de
+        set 0, (hl)             ; the old one, now further up, is dead
+dsWrite:
+        ld hl, (DS_POS)
+        ld (hl), 2              ; new
+        inc hl
+        ld de, DEF_NAME
+dsName:
+        ld a, (de)
+        ld (hl), a
+        inc hl
+        inc de
+        rla
+        jr nc, dsName
+        ex de, hl               ; DE = where the text goes
+        ld hl, (DEF_S)
+        ld bc, (DEF_LEN)
+        ldir
+        xor a
+        ld (de), a
+        ld hl, (DEFS_END)
+        ld de, (DS_TOTAL)
+        add hl, de
+        ld (DEFS_END), hl
+        ; blank it out of the entry
+        ld hl, (DEF_S)
+        ld bc, (DEF_LEN)
+        ld d, h
+        ld e, l
+        inc de
+        ld (hl), 32
+        dec bc
+        ldir
+        ld hl, DEF_COUNT
+        inc (hl)
+        ret
+
+; defsRebuild - recompile every live definition, in order, from its text
+; The procedure table and the procedure code area start again from empty.
+; Variables are untouched.  Any error goes to errorHandler as usual.
+defsRebuild:
+        xor a
+        ld (PROC_COUNT), a
+        ld hl, PROC_CODE_BASE
+        ld (PROC_CODE_PTR), hl
+        ld hl, DEFS_BUF
+drLoop:
+        call defsMore
+        ret nc
+        bit 0, (hl)
+        jr nz, drNext           ; being replaced or erased: leave it out
+        push hl
+        inc hl
+drName:
+        ld a, (hl)
+        inc hl
+        rla
+        jr nc, drName
+        ex de, hl               ; DE = the text
+        ld hl, TOKEN_BASE
+        ld (TOKEN_PTR), hl
+        call lex
+        call parseProgram
+        call genProgram
+        pop hl
+drNext:
+        call defsNext
+        jr drLoop
+
+; defsCompact - squeeze the stored definitions
+; In : A = the flag bit that means "throw away": 1 to finish an entry (drop the
+;      old versions), 2 to undo one (drop the new versions)
+; Every definition that stays becomes a plain live one (flag 0).
+defsCompact:
+        ld (DC_MASK), a
+        ld hl, DEFS_BUF
+        ld (DC_DST), hl
+cpLoop:
+        call defsMore
+        jr nc, cpDone
+        push hl
+        call defsNext           ; HL = the next definition
+        ex de, hl
+        pop hl                  ; HL = this one, DE = the next
+        ld a, (DC_MASK)
+        and (hl)
+        jr nz, cpSkip
+        ld (hl), 0
+        push de                 ; [next]
+        ex de, hl               ; DE = this one, HL = the next
+        or a
+        sbc hl, de              ; HL = its length
+        ld b, h
+        ld c, l
+        ex de, hl               ; HL = this one
+        ld de, (DC_DST)
+        ldir
+        ld (DC_DST), de
+        pop hl                  ; HL = the next
+        jr cpLoop
+cpSkip:
+        ex de, hl               ; HL = the next
+        jr cpLoop
+cpDone:
+        ld hl, (DC_DST)
+        ld (DEFS_END), hl
+        ret
+
+; defsCommit - the entry's changes to DEFS_BUF become final
+; Rebuilds the procedures (an error here undoes the entry), drops the replaced
+; definitions, and makes the new state the one later errors fall back to.
+defsCommit:
+        call defsRebuild
+        ld a, 1
+        call defsCompact
+        jp snapState
+
+; defsEntry - handle the definitions in the entry waiting in TEXT_BUF
+defsEntry:
+        call defsApply
+        or a
+        ret z
+        jr defsCommit
+
+; defsPrint - send one stored definition to the terminal, LF as CR LF
+; In : HL = the definition
+defsPrint:
+        inc hl
+dpName:
+        ld a, (hl)
+        inc hl
+        rla
+        jr nc, dpName
+dpLoop:
+        ld a, (hl)
+        inc hl
+        or a
+        jr z, dpEnd
+        cp 10
+        jr nz, dpChar
+        push hl
+        call serCRLF
+        pop hl
+        jr dpLoop
+dpChar:
+        push hl
+        call serPut
+        pop hl
+        jr dpLoop
+dpEnd:
+        jp serCRLF
+
+; matchHead - does the text start with this word (any case), as a whole word?
+; In : HL = the text; DE = the word, UPPER case, zero terminated
+; Out: Z when it does, and HL = what follows it, after any blanks
+matchHead:
+        call skipBlanks
+mhLoop:
+        ld a, (de)
+        or a
+        jr z, mhEnd
+        ld b, a
+        ld a, (hl)
+        and 0DFh
+        cp b
+        ret nz
+        inc hl
+        inc de
+        jr mhLoop
+mhEnd:
+        ld a, (hl)
+        call isAlpha            ; LISTX is not LIST
+        jr c, mhNo
+        call skipBlanks
+        xor a
+        ret
+mhNo:
+        or 1
+        ret

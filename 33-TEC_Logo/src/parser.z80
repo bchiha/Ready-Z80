@@ -1,0 +1,925 @@
+; Parser for Logo
+; ---------------
+
+; Parsers Token from the Lexical Analyzer and builds an Abstract Syntax Tree (AST)
+; The following is the Grammar that it implements. The AST is built in a post-order
+; traversal manner, meaning that the children of a node are processed before the node itself.
+; This is useful for later stages of compilation, such as code generation.
+
+; Grammar being implemented:
+;
+;   <program>         ::= <statement_list>
+;   <statement_list>  ::= <statement> <statement_list> | epsilon
+;   <statement>       ::= <command> | <repeat_stmt> | <make_stmt> | <if_stmt>
+;                        | <proc_def> | <proc_call>
+;   <command>         ::= FD <expr> | BK <expr> | RT <expr>
+;                        | LT <expr> | PU | PD
+;                        | HOME | CS
+;                        | SETX <expr> | SETY <expr> | SETXY <expr> <expr>
+;   <repeat_stmt>     ::= REPEAT <expr> '[' <statement_list> ']'
+;   <make_stmt>       ::= MAKE QUOTED_WORD <expr>
+;   <if_stmt>         ::= IF <condition> '[' <statement_list> ']'
+;                         ( '[' <statement_list> ']' )?
+;   <condition>       ::= <expr> <relop> <expr>
+;   <relop>           ::= '<' | '>' | '=' | '<>' | '<=' | '>='
+;   <proc_def>        ::= TO IDENT (VARREF)* <statement_list> END
+;   <proc_call>       ::= IDENT <expr>*   (arg count = procedure's arity)
+;   <expr>            ::= <term> (('+' | '-') <term>)*
+;   <term>            ::= <factor> (('*' | '/') <factor>)*
+;   <factor>          ::= NUMBER | VARREF | '(' <expr> ')' | '-' <factor>
+
+; The parser will build an AST using nodes.  Each node will have a type and a pointer to
+; the next node in the list.  The type of the node will determine what kind of statement
+; or expression it represents.
+
+; A Node will have the following structure:
+;   Type: One byte indicating the type of the node (statement or expression)
+;   Next: Two bytes pointing to the next node in the list (or NULL if this is the last node)
+; Depending on the type of the node, it may have additional fields:
+;  For PU, PD, HOME, CS
+;   - No additional fields
+;  For FD, BK, RT, LT, SETX, SETY, SETXY x coordinate, REPEAT, MAKE
+;   - Two bytes pointing to an expression node
+;  For SETXY y coordinate
+;   - Two bytes pointing to an expression node (for y coordinate)
+;  For MAKE
+;   - A Bit for the slot number in the VARNAMES string list
+;  For IF
+;   - Two bytes pointing to a condition node
+;   - Two bytes pointing to the then-branch statement list (Node)
+;   - Two bytes pointing to the optional else-branch statement list (Node)
+;  For REPEAT
+;   - Two bytes pointing to the statement list to repeat (Node)
+;  For TO (procedure definition)
+;   - A Bit 7 terminated string containing the procedure name
+;   - A byte indicating the number of parameters
+;   - A list of Bit 7 terminated strings containing the parameter names
+;  For procedure calls
+;   - A Bit 7 terminated string containing the procedure name
+;   - A byte indicating the number of arguments
+;   - A list of pointers to expression nodes for each argument
+
+; A Condition Node will have the following structure:
+;   RelOp: One byte indicating the relational operator (<, >, =, <>, <=, >=)
+;   Left: Two bytes pointing to the left expression node
+;   Right: Two bytes pointing to the right expression node
+
+; An Expression Node will have the following structure:
+;   Type: One byte indicating the type of the expression
+;         (number, variable, negation, addition, subtraction, multiplication, division)
+;   Depending on the type of the expression, it may have additional fields:
+;  For numbers
+;   - Two bytes containing the numeric value
+;  For variable references
+;   - A Bit 7 terminated string containing the variable name
+;  For negation
+;   - Two bytes pointing to the expression node being negated
+;  For binary operations (addition, subtraction, multiplication, division)
+;   - Two bytes pointing to the left expression node
+;   - Two bytes pointing to the right expression node
+
+; -----------------------------------------------------------------------------------
+
+; addNodeType - start a statement node: [type][next=0]
+; Input : A  = node type (CMD_xxx)
+; Output: HL = address of the new node          (ARENA_PTR advances by 3)
+addNodeType:
+        ld hl, (ARENA_PTR)
+        push hl                 ; remember where the node starts
+        ld (hl), a
+        inc hl
+        ld (hl), 0              ; next, low
+        inc hl
+        ld (hl), 0              ; next, high  (parseStatementList patches it)
+        inc hl
+        ld (ARENA_PTR), hl
+        pop hl                  ; HL = node address
+        ret
+
+; addNodeAddr - reserve a zeroed 2-byte pointer slot in the node being built
+; Output: HL = address of the slot              (ARENA_PTR advances by 2)
+addNodeAddr:
+        ld hl, (ARENA_PTR)
+        push hl
+        ld (hl), 0
+        inc hl
+        ld (hl), 0
+        inc hl
+        ld (ARENA_PTR), hl
+        pop hl
+        ret
+
+; addNodeByte - reserve one zeroed byte in the node being built
+;   Out: HL = address of the byte               (ARENA_PTR advances by 1)
+addNodeByte:
+        ld hl, (ARENA_PTR)
+        ld (hl), 0
+        push hl
+        inc hl
+        ld (ARENA_PTR), hl
+        pop hl
+        ret
+
+; setField - store a pointer into a parent node
+; Input : HL = parent node address
+;         C  = field offset  (NODE_NEXT / NODE_ARG / NODE_BODY)
+;         DE = the pointer to store (the child's address)
+; Output: HL = address of the field's high byte        (clobbers B)
+setField:
+        ld b, 0
+        add hl, bc              ; HL = parent + offset
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        ret
+
+; makeBinop - build an operator node: [type][left][right]
+; Input : A = EXPR_ADD/SUB/MUL/DIV, DE = left child, BC = right child
+; Output: HL = address of the new node
+makeBinop:
+        ld hl, (ARENA_PTR)
+        push hl
+        ld (hl), a
+        inc hl
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl
+        ld (hl), c
+        inc hl
+        ld (hl), b
+        inc hl
+        ld (ARENA_PTR), hl
+        pop hl
+        ret
+
+; Parser Initalise.  Call once at start up or NEW
+parserInit:
+        xor a
+        ld (SLOT_COUNT), a
+        ld (PROC_COUNT), a
+        ld (IN_PROC), a
+        ret
+
+; Parser for Logo Compiler.  Iterates through the tokens produced by the lexer and
+; builds an Abstract Syntax Tree (AST) representing the program structure.
+; The parser follows a recursive descent approach, where each non-terminal in the
+; grammar corresponds to a function in the parser.
+;   <program>         ::= <statement_list> EOF
+; Output: HL - address of the root node of the AST
+parseProgram:
+        ld hl, TOKEN_BASE
+        ld (TOKEN_PTR), hl
+        ld hl, ARENA_BASE
+        ld (ARENA_PTR), hl
+        xor a
+        ld (IN_PROC), a         ; not inside a TO
+
+        call parseStatementList ; HL = first statement (0 if program empty)
+        push hl                 ; keep it across expectToken
+
+        ld a, TOK_EOF
+        ld iy, ERR_PAR_END
+        call expectToken
+
+        pop hl
+        ld (AST_ROOT), hl
+        ret
+
+; Parse Statement List. Stops at ']' (end of a REPEAT/IF block), END (end of a TO body), or EOF
+; Otherwise, it parses a statement and recursively calls itself to parse the next statement.
+;   <statement_list>  ::= <statement> <statement_list> | epsilon
+parseStatementList:
+        call peek
+        cp TOK_RBRACKET
+        jr z, listEnd
+        cp TOK_END
+        jr z, listEnd
+        cp TOK_EOF
+        jr z, listEnd
+        cp TOK_TO
+        jr nz, listStmt
+        call parseProcDef       ; defines the procedure - nothing goes in the list
+        jp parseStatementList   ; the list carries on after END
+listStmt:
+        call parseStatement     ; HL = this statement's node
+        push hl                 ; "first" - must survive the recursive call
+        call parseStatementList ; HL = the rest of the list (0 if none)
+        ex de, hl               ; DE = rest
+        pop hl                  ; HL = first
+        push hl                 ; (it is our return value)
+        ld c, NODE_NEXT
+        call setField           ; first->next = rest
+        pop hl                  ; HL = first
+        ret
+
+listEnd:
+        ld hl, 0                ; epsilon: empty list
+        ret
+
+; Parse a single statement.  A statement can be a command, a repeat statement, a make statement, an if statement
+; a procedure definition, or a procedure call.
+; <statement> ::= <command> | <repeat_stmt> | <make_stmt> | <if_stmt>
+;               | <proc_def> | <proc_call>
+; Output: HL - address of the statement node
+parseStatement:
+        call peek
+        cp TOK_REPEAT
+        jp z, parseRepeat
+        cp TOK_IF
+        jp z, parseIf
+        cp TOK_MAKE
+        jp z, parseMake
+        cp TOK_IDENT
+        jp z, parseProcCall
+        jp parseCommand
+
+; Parse Repeat.  Check for REPEAT, then an Expression, following a [] statement list
+; <repeat_stmt> ::= REPEAT <expr> '[' <statement_list> ']'
+; Output: HL - address of repeat statement node
+parseRepeat:
+        ld a, TOK_REPEAT
+        ld iy, ERR_PAR_REP
+        call expectToken        ; burn REPEAT
+
+        ld a, CMD_REPEAT
+        call addNodeType        ; HL = REPEAT node
+        push hl                 ; [node]
+        call addNodeAddr        ; reserve 'arg'
+        call addNodeAddr        ; reserve 'body'
+
+        call parseExpression    ; HL = ROOT of the count expression
+        ex de, hl               ; DE = expression
+        pop hl                  ; HL = REPEAT node
+        push hl                 ; [node]
+        ld c, NODE_ARG
+        call setField           ; node->arg = expression
+
+        ld a, TOK_LBRACKET
+        ld iy, ERR_PAR_LBR
+        call expectToken
+
+        call parseStatementList ; HL = first node of the body (0 if empty)
+        ex de, hl               ; DE = body
+        pop hl                  ; HL = REPEAT node
+        push hl                 ; [node]
+        ld c, NODE_BODY
+        call setField           ; node->body = body list
+
+        ld a, TOK_RBRACKET
+        ld iy, ERR_PAR_RBR
+        call expectToken
+
+        pop hl                  ; HL = REPEAT node  (parseStatementList will
+        ret                     ;     patch its 'next')
+
+; <if_stmt>   ::= IF <condition> '[' <statement_list> ']'
+;                 ( '[' <statement_list> ']' )?
+;   IF node:   [type][next][cond][body][else_body]      9 bytes
+;   Cond node: [relop][left][right]                     5 bytes
+;   An IF with no else block simply leaves else_body = 0.
+parseIf:
+        ld a, TOK_IF
+        ld iy, ERR_PAR_IF
+        call expectToken        ; burn IF
+
+        ld a, CMD_IF
+        call addNodeType        ; HL = IF node
+        push hl                 ; [node]
+        call addNodeAddr        ; reserve cond
+        call addNodeAddr        ; reserve body      (then-block)
+        call addNodeAddr        ; reserve else_body (else-block)
+
+        call parseCondition     ; HL = condition node
+        ex de, hl               ; DE = condition
+        pop hl                  ; HL = IF node
+        push hl                 ; [node]
+        ld c, NODE_COND
+        call setField           ; node->cond = condition
+
+        ld a, TOK_LBRACKET
+        ld iy, ERR_PAR_LBR
+        call expectToken
+        call parseStatementList ; HL = then-block (0 if empty)
+        ex de, hl
+        pop hl
+        push hl                 ; [node]
+        ld c, NODE_BODY
+        call setField           ; node->body = then-block
+        ld a, TOK_RBRACKET
+        ld iy, ERR_PAR_RBR
+        call expectToken
+
+        ; Optional ELSE block: a second '[' straight after the first ']'.
+        call peek
+        cp TOK_LBRACKET
+        jr nz, ifDone           ; no else - else_body stays 0
+        call advance            ; burn '['
+        call parseStatementList ; HL = else-block (0 if empty)
+        ex de, hl
+        pop hl
+        push hl                 ; [node]
+        ld c, NODE_ELSE
+        call setField           ; node->else_body = else-block
+        ld a, TOK_RBRACKET
+        ld iy, ERR_PAR_RBR
+        call expectToken
+ifDone:
+        pop hl                  ; HL = IF node
+        ret
+
+; nameEqual - compare two bit-7-terminated names
+;   In : HL = name 1, DE = name 2
+;   Out: Z set if they are the same          (clobbers A, HL, DE)
+nameEqual:
+        ld a, (de)
+        cp (hl)
+        ret nz                  ; different character -> NZ
+        rla                     ; carry = bit 7 of the (equal) byte
+        jr c, nameSame          ; both names ended together
+        inc hl
+        inc de
+        jr nameEqual
+nameSame:
+        xor a                   ; Z set
+        ret
+
+; findOrAddVar - look a name up in VARNAMES, adding it if it is new
+;   In : HL = the name (bit-7 terminated)
+;   Out: A  = slot number               (clobbers BC, DE, HL)
+findOrAddVar:
+        ld a, (SLOT_COUNT)
+        ld c, a                 ; C = slots in use
+        ld b, 0                 ; B = slot being checked
+        ld de, VARNAMES         ; DE = that slot's entry
+fvLoop:
+        ld a, b
+        cp c
+        jr z, fvAdd             ; checked every slot in use - not found
+        push hl                 ; [name]
+        push de                 ; [entry, name]
+        call nameEqual
+        pop de
+        pop hl
+        jr z, fvFound
+        push hl                 ; DE += 8  (next entry); HL is borrowed
+        ld hl, 8
+        add hl, de
+        ex de, hl
+        pop hl
+        inc b
+        jr fvLoop
+fvFound:
+        ld a, b                 ; slot = B
+        ret
+fvAdd:
+        ld a, c
+        cp MAX_SLOTS
+        jr nz, fvRoom
+        ld iy, ERR_PAR_VAR
+        jp errorHandler
+fvRoom:
+        ld a, (hl)              ; copy the name into the free entry (DE),
+        ld (de), a              ; including the char with bit 7 set
+        inc hl
+        inc de
+        rla
+        jr nc, fvRoom
+        ld a, c
+        inc a
+        ld (SLOT_COUNT), a      ; one more slot in use
+        dec a                   ; A = the new slot number (old count)
+        ret
+
+; <make_stmt> ::= MAKE QUOTED_WORD <expr>
+;   Node: [type][next][arg = value expr][slot]       6 bytes
+parseMake:
+        call advance            ; burn MAKE
+        call peek
+        cp TOK_QUOTED_WORD
+        jr z, mkName
+        ld iy, ERR_PAR_MAK   ; MAKE must be followed by "NAME
+        jp errorHandler
+mkName:
+        ld hl, (TOKEN_PTR)
+        inc hl                  ; first character of the name
+        call findOrAddVar       ; A = slot
+        push af                 ; [slot]
+        call advance            ; burn the "NAME token
+
+        ld a, CMD_MAKE
+        call addNodeType        ; HL = MAKE node
+        push hl                 ; [node, slot]
+        call addNodeAddr        ; reserve arg
+        call addNodeByte        ; HL = address of the slot byte
+        pop de                  ; DE = MAKE node
+        pop af                  ; A  = slot
+        ld (hl), a              ; node->slot = slot
+        push de                 ; [node]
+
+        call parseExpression    ; HL = ROOT of the value expression
+        ex de, hl               ; DE = expression
+        pop hl                  ; HL = MAKE node
+        push hl
+        ld c, NODE_ARG
+        call setField           ; node->arg = expression
+        pop hl                  ; HL = MAKE node
+        ret
+
+; parseCondition - <expr> <relop> <expr>
+;   Out: HL = condition node  [relop][left][right]
+;   The six comparison tokens (< > = <> <= >=) are consecutive in TokenType
+;   and in the same order as RelOp, so  relop = token - TOK_LESS.
+parseCondition:
+        call parseExpression    ; HL = left
+        push hl                 ; [left]
+        call peek               ; A = the comparison token
+        cp TOK_EQUAL
+        jr c, condError         ; below '<'  - not a comparison
+        cp TOK_AFTER_RELOP
+        jr nc, condError        ; above '>=' - not a comparison
+        sub TOK_EQUAL           ; A = REL_xx
+        push af                 ; [relop, left]
+        call advance            ; burn the comparison token
+        call parseExpression    ; HL = right
+        ld b, h
+        ld c, l                 ; BC = right
+        pop af                  ; A  = relop
+        pop de                  ; DE = left
+        jp makeBinop            ; same [type][left][right] layout -> HL = node
+condError:
+        ld iy, ERR_PAR_REL
+        jp errorHandler
+
+; findProc - search PROCTABLE for a name
+;   In : HL = the name (bit-7 terminated)
+;   Out: carry set   -> HL = the matching entry
+;        carry clear -> HL = the next free entry (no match)
+;   Clobbers A, BC, DE
+findProc:
+        ld a, (PROC_COUNT)
+        ld c, a                 ; C = procedures defined so far
+        ld b, 0                 ; B = entry being checked
+        ld de, PROCTABLE        ; DE = that entry
+fpLoop:
+        ld a, b
+        cp c
+        jr z, fpMiss            ; searched them all
+        push hl                 ; [name]
+        push de                 ; [entry, name]
+        call nameEqual          ; an entry starts with its name
+        pop de
+        pop hl
+        jr z, fpHit
+        push hl
+        ld hl, PROC_SIZE
+        add hl, de
+        ex de, hl               ; DE = next entry
+        pop hl
+        inc b
+        jr fpLoop
+fpHit:
+        ex de, hl               ; HL = the entry
+        scf
+        ret
+fpMiss:
+        ex de, hl               ; HL = the next free entry
+        or a                    ; carry clear
+        ret
+
+; addProc - register a new procedure
+;   In : HL = the name (bit-7 terminated)
+;   Out: HL = its (empty) ProcDef entry         Clobbers A, BC, DE
+;   Errors: ERR_PAR_PROCDUP (already defined), ERR_PAR_PROCFULL (table full)
+addProc:
+        push hl                 ; [name]
+        call findProc
+        jr nc, procNew
+        ld iy, ERR_PAR_PRD
+        jp errorHandler
+procNew:
+        ld a, (PROC_COUNT)
+        cp MAX_PROCS
+        jr c, procRoom
+        ld iy, ERR_PAR_PRF
+        jp errorHandler
+procRoom:
+        inc a
+        ld (PROC_COUNT), a
+        ex de, hl               ; DE = the free entry
+        pop hl                  ; HL = the name
+        push de                 ; [entry]  (our return value)
+procCopy:
+        ld a, (hl)              ; copy the name, including the char
+        ld (de), a              ; that has bit 7 set
+        inc hl
+        inc de
+        rla
+        jr nc, procCopy
+        pop hl                  ; HL = entry
+        push hl
+        ld de, PROC_NPARAMS
+        add hl, de              ; HL = entry + 8
+        ld b, 8
+procClear:
+        ld (hl), 0              ; param_count, params, body, spare = 0
+        inc hl
+        djnz procClear
+        pop hl                  ; HL = entry
+        ret
+
+; addParam - append a parameter's variable slot to a ProcDef entry
+;   In : HL = the entry, C = the variable slot      Clobbers A, B, DE, HL
+;   Errors: ERR_PAR_PARAMS if it already has MAX_PARAMS parameters
+addParam:
+        ld de, PROC_NPARAMS
+        add hl, de              ; HL = &param_count
+        ld a, (hl)              ; A = n
+        cp MAX_PARAMS
+        jr c, prmRoom
+        ld iy, ERR_PAR_PAR
+        jp errorHandler
+prmRoom:
+        inc (hl)                ; param_count = n + 1
+        ld e, a
+        ld d, 0                 ; DE = n
+        inc hl                  ; HL = &params[0]   (right after param_count)
+        add hl, de              ; HL = &params[n]
+        ld (hl), c
+        ret
+
+; <proc_def> ::= TO IDENT (VARREF)* <statement_list> END
+;   Builds no node: it fills in a PROCTABLE entry (and its body list).
+parseProcDef:
+        ld a, (IN_PROC)
+        or a
+        jr z, pdOuter
+        ld iy, ERR_PAR_NES      ; TO inside another TO
+        jp errorHandler
+pdOuter:
+        call advance            ; burn TO
+        call peek
+        cp TOK_IDENT
+        jr z, pdName
+        ld iy, ERR_PAR_TON
+        jp errorHandler
+pdName:
+        ld hl, (TOKEN_PTR)
+        inc hl                  ; HL = the procedure's name
+        call addProc            ; HL = its entry - registered NOW, so the
+        push hl                 ; [entry]            body may call itself
+        call advance            ; burn the name
+pdParams:
+        call peek
+        cp TOK_VARREF
+        jr nz, pdBody
+        ld hl, (TOKEN_PTR)
+        inc hl
+        call findOrAddVar       ; A = the parameter's variable slot
+        ld c, a
+        pop hl                  ; HL = entry
+        push hl                 ; [entry]
+        call addParam           ; entry->params[n] = slot
+        call advance            ; burn :NAME
+        jr pdParams
+pdBody:
+        ld a, 1
+        ld (IN_PROC), a
+        call parseStatementList ; HL = the body (0 if empty)
+        xor a
+        ld (IN_PROC), a
+        ex de, hl               ; DE = body
+        pop hl                  ; HL = entry
+        push hl                 ; [entry]
+        ld c, PROC_BODY
+        call setField           ; entry->body = body
+        ld a, TOK_END
+        ld iy, ERR_PAR_PEN
+        call expectToken        ; burn END
+        pop hl
+        ret
+
+; <call_stmt> ::= IDENT <expr>*     (exactly as many <expr> as the procedure
+;                                    has parameters)
+;   Node: [type][next][proc][argc][arg 0][arg 1] ...    6 + 2*argc bytes
+;   Out: HL = the CALL node
+parseProcCall:
+        ld hl, (TOKEN_PTR)
+        inc hl                  ; HL = the name
+        call findProc
+        jr c, pcFound
+        ld iy, ERR_PAR_PRU      ; not defined (yet)
+        jp errorHandler
+pcFound:
+        push hl                 ; [entry]
+        call advance            ; burn the name
+        ld a, CMD_CALL
+        call addNodeType        ; HL = CALL node
+        pop de                  ; DE = ProcDef entry
+        push hl                 ; [node]
+        call addNodeAddr        ; reserve 'proc'
+        ld (hl), e
+        inc hl
+        ld (hl), d              ; node->proc = entry
+        ld hl, PROC_NPARAMS
+        add hl, de
+        ld a, (hl)              ; A = argc = the procedure's param_count
+        push af
+        call addNodeByte        ; HL = &argc
+        pop af
+        ld (hl), a              ; node->argc = argc
+        or a
+        jr z, pcDone            ; no arguments
+        ld b, a
+        ld c, a                 ; B and C both = argc
+pcReserve:
+        call addNodeAddr        ; one pointer slot per argument
+        djnz pcReserve
+        ld b, c                 ; B = arguments still to parse
+        pop hl                  ; HL = node
+        push hl                 ; [node]
+        ld de, NODE_ARGS
+        add hl, de              ; HL = the first argument slot
+pcLoop:
+        push bc                 ; [count, node]
+        push hl                 ; [slot, count, node]
+        call parseExpression    ; HL = ROOT of this argument
+        ex de, hl               ; DE = argument
+        pop hl                  ; HL = its slot
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl                  ; HL = the next slot
+        pop bc                  ; B = arguments left
+        djnz pcLoop
+pcDone:
+        pop hl                  ; HL = CALL node
+        ret
+
+parseCommand:
+        call peek
+        cp TOK_FD
+        jp z, parseFD
+        cp TOK_BK
+        jp z, parseBK
+        cp TOK_RT
+        jp z, parseRT
+        cp TOK_LT
+        jp z, parseLT
+        cp TOK_PU
+        jp z, parsePU
+        cp TOK_PD
+        jp z, parsePD
+        cp TOK_HOME
+        jp z, parseHOME
+        cp TOK_CS
+        jp z, parseCS
+        cp TOK_SETX
+        jp z, parseSETX
+        cp TOK_SETY
+        jp z, parseSETY
+        cp TOK_SETXY
+        jp z, parseSETXY
+        cp TOK_STOP
+        jp z, parseStop
+        ld iy, ERR_PAR_UNC
+        jp errorHandler
+
+; --- commands with no argument: burn the keyword, make a 3-byte node ---
+parsePU:        ;PEN UP
+        call advance
+        ld a, CMD_PU
+        jp addNodeType          ; returns HL = node
+parsePD:        ;PEN DOWN
+        call advance
+        ld a, CMD_PD
+        jp addNodeType
+parseHOME:      ;HOME
+        call advance
+        ld a, CMD_HOME
+        jp addNodeType
+parseCS:        ;CLEAR SCREEN
+        call advance
+        ld a, CMD_CS
+        jp addNodeType
+parseStop:      ;STOP and exit a procedure
+        call advance
+        ld a, CMD_STOP
+        jp addNodeType
+
+; --- commands with one expression argument:  IE: FD <expr> ---
+parseFD:
+        ld a, CMD_FD
+        jp parseArgCommand
+parseBK:
+        ld a, CMD_BK
+        jp parseArgCommand
+parseRT:
+        ld a, CMD_RT
+        jp parseArgCommand
+parseLT:
+        ld a, CMD_LT
+        jp parseArgCommand
+parseSETX:
+        ld a, CMD_SETX
+        jp parseArgCommand
+parseSETY:
+        ld a, CMD_SETY
+        jp parseArgCommand
+
+; --- commands with two expression arguments:  IE: SETXY <x expr> <y expr> ---
+;   Node: [type][next][arg = x][arg2 = y]      7 bytes
+parseSETXY:
+        call advance            ; burn the SETXY keyword
+        ld a, CMD_SETXY
+        call addNodeType        ; HL = SETXY node
+        push hl                 ; [node]
+        call addNodeAddr        ; reserve arg  (x)
+        call addNodeAddr        ; reserve arg2 (y)
+
+        call parseExpression    ; HL = x expression
+        ex de, hl               ; DE = x
+        pop hl                  ; HL = node
+        push hl                 ; [node]
+        ld c, NODE_ARG
+        call setField           ; node->arg = x
+
+        call parseExpression    ; HL = y expression
+        ex de, hl               ; DE = y
+        pop hl                  ; HL = node
+        push hl                 ; [node]
+        ld c, NODE_ARG2
+        call setField           ; node->arg2 = y
+
+        pop hl                  ; HL = SETXY node
+        ret
+
+; parseArgCommand - the parent/child pattern in its smallest form
+; Input : A = CMD_xxx; the current token is the command keyword
+; Output: HL = the command node          Node: [type][next][arg]
+parseArgCommand:
+        push af
+        call advance            ; burn the keyword
+        pop af
+        call addNodeType        ; HL = command node
+        push hl                 ; [node]
+        call addNodeAddr        ; reserve 'arg'
+        call parseExpression    ; HL = ROOT of the argument expression
+        ex de, hl               ; DE = expression
+        pop hl                  ; HL = command node
+        push hl
+        ld c, NODE_ARG
+        call setField           ; node->arg = expression
+        pop hl                  ; HL = command node
+        ret
+
+; ==========================================================================
+; <expr>   ::= <term>   (('+' | '-') <term>)*
+; <term>   ::= <factor> (('*' | '/') <factor>)*
+; <factor> ::= NUMBER, VARREF, '(' expr ')', '-'
+;
+; Left-associative loops.  The running "left" tree lives on the stack; each
+; time an operator is found it becomes   newLeft = OP(left, right).
+; Out: HL = ROOT of the tree built so far.
+; ==========================================================================
+parseExpression:
+        call parseTerm          ; HL = first term
+        push hl                 ; [left]
+exprLoop:
+        call peek
+        cp TOK_PLUS
+        jr z, exprAdd
+        cp TOK_MINUS
+        jr z, exprSub
+        pop hl                  ; HL = ROOT (the last node built)
+        ret
+exprAdd:
+        ld a, EXPR_ADD
+        jr exprOp
+exprSub:
+        ld a, EXPR_SUB
+exprOp:
+        push af                 ; [op, left]
+        call advance            ; burn the operator token
+        call parseTerm          ; HL = right
+        ld b, h
+        ld c, l                 ; BC = right
+        pop af                  ; A  = op        [left]
+        pop de                  ; DE = left      []
+        call makeBinop          ; HL = new OP node
+        push hl                 ; it is the new "left"
+        jr exprLoop
+
+parseTerm:
+        call parseFactor        ; HL = first factor
+        push hl                 ; [left]
+termLoop:
+        call peek
+        cp TOK_STAR
+        jr z, termMul
+        cp TOK_SLASH
+        jr z, termDiv
+        pop hl                  ; HL = ROOT of the term
+        ret
+termMul:
+        ld a, EXPR_MUL
+        jr termOp
+termDiv:
+        ld a, EXPR_DIV
+termOp:
+        push af
+        call advance
+        call parseFactor        ; HL = right
+        ld b, h
+        ld c, l                 ; BC = right
+        pop af
+        pop de                  ; DE = left
+        call makeBinop          ; HL = new OP node
+        push hl
+        jr termLoop
+
+parseFactor:
+        call peek
+        cp TOK_NUMBER
+        jp z, parseNumber
+        cp TOK_LPAREN
+        jp z, parseParen
+        cp TOK_MINUS
+        jp z, parseNeg
+        cp TOK_VARREF
+        jp z, parseVarRef
+        ld iy, ERR_PAR_FAC
+        jp errorHandler
+
+; parseNumber - token layout is [TOK_NUMBER][lo][hi]
+;   Out: HL = the EXPR_NUM node.  Nothing is kept in registers across
+;        'advance', so it does not matter what advance clobbers.
+parseNumber:
+        ld hl, (TOKEN_PTR)
+        inc hl                  ; skip the token type byte
+        ld c, (hl)              ; value, low
+        inc hl
+        ld b, (hl)              ; value, high
+
+        ld hl, (ARENA_PTR)
+        push hl                 ; node address = return value
+        ld (hl), EXPR_NUM
+        inc hl
+        ld (hl), c
+        inc hl
+        ld (hl), b
+        inc hl
+        ld (ARENA_PTR), hl
+
+        call advance            ; burn the number token
+        pop hl                  ; HL = EXPR_NUM node
+        ret
+
+; parseParen - '(' <expr> ')'
+;   Builds no node of its own: the inner expression's root IS the factor.
+;   Out: HL = root of the inner expression
+parseParen:
+        call advance            ; burn '('
+        call parseExpression    ; HL = inner root
+        push hl                 ; keep it across expectToken
+        ld a, TOK_RPAREN
+        ld iy, ERR_PAR_RPA
+        call expectToken        ; burn ')'
+        pop hl                  ; HL = inner root
+        ret
+
+; parseNeg - '-' <factor>          Node: [EXPR_NEG][operand]    3 bytes
+;   Recurses into parseFactor, so  - - 5  and  -(2+3)  both work.
+;   Out: HL = the EXPR_NEG node
+parseNeg:
+        call advance            ; burn '-'
+        call parseFactor        ; HL = operand
+        ex de, hl               ; DE = operand
+        ld hl, (ARENA_PTR)
+        push hl                 ; node address = return value
+        ld (hl), EXPR_NEG
+        inc hl
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl
+        ld (ARENA_PTR), hl
+        pop hl
+        ret
+
+; parseVarRef - :NAME as a factor            Node: [EXPR_VAR][slot]   2 bytes
+parseVarRef:
+        ld hl, (TOKEN_PTR)
+        inc hl                  ; skip the token type -> first character
+        call findOrAddVar       ; A = slot
+        ld c, a
+        ld hl, (ARENA_PTR)
+        push hl                 ; node address = return value
+        ld (hl), EXPR_VAR
+        inc hl
+        ld (hl), c
+        inc hl
+        ld (ARENA_PTR), hl
+        call advance            ; burn the :NAME token
+        pop hl
+        ret

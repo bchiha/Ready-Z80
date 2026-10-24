@@ -1,0 +1,746 @@
+; Bytecode VM for Logo
+; --------------------
+
+; Runs the bytecode that the code generator left at MAIN_BASE.
+;
+; Two entry points:
+;     vmInit  once, at start-up (and for NEW): variables = 0, GLCD set up, the
+;             turtle at home with the pen down.
+;     vmRun   once per line: runs the program at MAIN_BASE.  The variables and
+;             the turtle are left as they were, so one line can use what the
+;             lines before it did.
+;
+; vmRun is called like an ordinary subroutine.  It returns (with RET) when the
+; program reaches HALT.  A runtime error goes to errorHandler with the error
+; constant in IY, the same way as the other stages.
+;
+; The VM is a stack machine with four stacks, all in RAM and each one in
+; its own page(s), so a push only has to look at the high byte of the pointer:
+;     value stack   VM_VSTACK   1 page   128 words  expression values
+;     return stack  VM_RSTACK   1 page   128 words  return addresses of CALL
+;     save stack    VM_SSTACK   2 pages  128 x 4    parameters' old values
+;     loop stack    VM_LSTACK   1 page   128 words  REPEAT counters
+; Procedure calls that recurse use one return entry per call and one save entry
+; per parameter, so with 4 parameters the save stack runs out at about 32 deep.
+;
+; All of the VM's state is in RAM (VM_PC, the stack pointers, ...), never in
+; registers between two instructions, so MON3 may use any register while a
+; turtle command is drawing.
+
+; ---------------------------------------------------------------------------
+; Start
+; ---------------------------------------------------------------------------
+
+; vmInit - variables to 0, GLCD ready, turtle at home with the pen down
+vmInit:
+        ld hl, VARVALUES
+        ld d, h
+        ld e, l
+        inc de
+        ld bc, 31
+        ld (hl), 0
+        ldir
+        jp turtleInit
+
+; vmRun - run the program at MAIN_BASE
+vmRun:
+        ld (VM_SP0), sp         ; opHalt returns from here
+        ld hl, VM_VSTACK
+        ld (VM_VSP), hl
+        ld hl, VM_RSTACK
+        ld (VM_RSP), hl
+        ld hl, VM_SSTACK
+        ld (VM_SSP), hl
+        ld hl, VM_LSTACK
+        ld (VM_LSP), hl
+        ld hl, MAIN_BASE
+        ld (VM_PC), hl
+
+; vmLoop - fetch the next opcode and jump to its handler.
+; Every handler ends with   jp vmLoop
+vmLoop:
+        ld a, (TRACE_ON)
+        or a
+        call nz, traceInstr     ; AD key: show each instruction as it runs
+        call fetchByte
+        cp OP_COUNT
+        jp nc, errBadOp
+        add a, a
+        ld l, a
+        ld h, 0
+        ld de, vmTable
+        add hl, de
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl
+        jp (hl)
+
+; The handlers, in opcode order
+vmTable:
+        dw opPushConst, opPushVar, opStoreVar
+        dw opAdd, opSub, opMul, opDiv, opNeg
+        dw opCmpEq, opCmpLt, opCmpGt, opCmpNe, opCmpLe, opCmpGe
+        dw opJmp, opJz, opHalt
+        dw opFd, opBk, opRt, opLt, opPu, opPd, opHome
+        dw opSetXY, opSetX, opSetY, opCs
+        dw opLoopStart, opLoopEnd
+        dw opCall, opBindVar, opUnbindVar, opRet
+        dw opLoopPop
+
+; ---------------------------------------------------------------------------
+; Fetching and the stacks
+; ---------------------------------------------------------------------------
+
+; fetchByte - A = the next bytecode byte
+fetchByte:
+        ld hl, (VM_PC)
+        ld a, (hl)
+        inc hl
+        ld (VM_PC), hl
+        ret
+
+; fetchWord - DE = the next two bytecode bytes (low first)
+fetchWord:
+        ld hl, (VM_PC)
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        inc hl
+        ld (VM_PC), hl
+        ret
+
+; vPush - push DE on the value stack.  Clobbers A, HL.
+vPush:
+        ld hl, (VM_VSP)
+        ld a, h
+        cp VM_VSTACK_HI
+        jp nz, errVStack
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl
+        ld (VM_VSP), hl
+        ret
+
+; vPop - DE = the value popped off the value stack.  Clobbers HL.
+vPop:
+        ld hl, (VM_VSP)
+        dec hl
+        ld d, (hl)
+        dec hl
+        ld e, (hl)
+        ld (VM_VSP), hl
+        ret
+
+; vPop2 - pop two values: DE = the top one (b), HL = the one below it (a)
+vPop2:
+        call vPop
+        push de
+        call vPop
+        ex de, hl
+        pop de
+        ret
+
+; pushHL - push HL, then continue with the next instruction
+pushHL:
+        ex de, hl
+        call vPush
+        jp vmLoop
+
+; rPush - push DE on the return stack.  Clobbers A, HL.
+rPush:
+        ld hl, (VM_RSP)
+        ld a, h
+        cp VM_RSTACK_HI
+        jp nz, errRStack
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl
+        ld (VM_RSP), hl
+        ret
+
+; rPop - DE = the popped return address.  Clobbers HL.
+rPop:
+        ld hl, (VM_RSP)
+        dec hl
+        ld d, (hl)
+        dec hl
+        ld e, (hl)
+        ld (VM_RSP), hl
+        ret
+
+; lPush - push the REPEAT counter DE on the loop stack.  Clobbers A, HL.
+lPush:
+        ld hl, (VM_LSP)
+        ld a, h
+        cp VM_LSTACK_HI
+        jp nz, errLStack
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl
+        ld (VM_LSP), hl
+        ret
+
+; sPush - save a parameter's old value: DE = the value, C = its slot.
+; An entry is 4 bytes (value, slot, spare); the save stack is two pages.
+; Clobbers A, HL.  Keeps BC and DE.
+sPush:
+        ld hl, (VM_SSP)
+        ld a, h
+        sub VM_SSTACK_HI
+        cp 2
+        jp nc, errSStack
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        inc hl
+        ld (hl), c
+        inc hl
+        ld (hl), 0
+        inc hl
+        ld (VM_SSP), hl
+        ret
+
+; sPop - DE = the saved value, C = the slot it belongs to.  Clobbers HL.
+sPop:
+        ld hl, (VM_SSP)
+        dec hl
+        dec hl
+        ld c, (hl)
+        dec hl
+        ld d, (hl)
+        dec hl
+        ld e, (hl)
+        ld (VM_SSP), hl
+        ret
+
+; varAddr - HL = the address of variable slot C.  Clobbers A.
+varAddr:
+        ld hl, VARVALUES
+        ld a, c
+        add a, a
+        add a, l
+        ld l, a
+        ret nc
+        inc h
+        ret
+
+; ---------------------------------------------------------------------------
+; Values and arithmetic
+; ---------------------------------------------------------------------------
+
+opPushConst:
+        call fetchWord
+        call vPush
+        jp vmLoop
+
+opPushVar:
+        call fetchByte
+        ld c, a
+        call varAddr
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        call vPush
+        jp vmLoop
+
+opStoreVar:
+        call fetchByte
+        ld c, a
+        call vPop
+        call varAddr
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        jp vmLoop
+
+opAdd:
+        call vPop2
+        add hl, de
+        jp pushHL
+
+opSub:
+        call vPop2
+        or a
+        sbc hl, de
+        jp pushHL
+
+opMul:
+        call vPop2
+        ld b, h
+        ld c, l
+        call mul16u             ; the low 16 bits are the same signed or not
+        ex de, hl
+        jp pushHL
+
+opDiv:
+        call vPop2
+        call divS16
+        jp pushHL
+
+opNeg:
+        call vPop
+        ex de, hl
+        call negHL
+        jp pushHL
+
+; ---------------------------------------------------------------------------
+; Comparisons: pop b and a, push 1 when "a <op> b" holds, otherwise 0
+; ---------------------------------------------------------------------------
+
+cmpPop:
+        call vPop2
+        jp cmpS
+
+opCmpEq:
+        call cmpPop
+        jp z, pushTrue
+        jp pushFalse
+opCmpNe:
+        call cmpPop
+        jp nz, pushTrue
+        jp pushFalse
+opCmpLt:
+        call cmpPop
+        jp c, pushTrue
+        jp pushFalse
+opCmpGe:
+        call cmpPop
+        jp nc, pushTrue
+        jp pushFalse
+opCmpGt:
+        call cmpPop
+        jp c, pushFalse
+        jp z, pushFalse
+        jp pushTrue
+opCmpLe:
+        call cmpPop
+        jp c, pushTrue
+        jp z, pushTrue
+        jp pushFalse
+pushTrue:
+        ld hl, 1
+        jp pushHL
+pushFalse:
+        ld hl, 0
+        jp pushHL
+
+; ---------------------------------------------------------------------------
+; Control flow
+; ---------------------------------------------------------------------------
+
+opJmp:
+        call fetchWord
+        ld (VM_PC), de
+        jp vmLoop
+
+; JZ: pop the condition and jump when it is 0
+opJz:
+        call fetchWord
+        push de
+        call vPop
+        ld a, d
+        or e
+        pop de
+        jp nz, vmLoop
+        ld (VM_PC), de
+        jp vmLoop
+
+opHalt:
+        ld sp, (VM_SP0)
+        ret
+
+; LOOP_START done: pop the count.  A count of 0 or less skips the loop
+; (jumps to 'done'); otherwise the count goes on the loop stack.
+opLoopStart:
+        call fetchWord
+        push de
+        call vPop
+        bit 7, d
+        jr nz, lsSkip
+        ld a, d
+        or e
+        jr z, lsSkip
+        pop hl
+        call lPush
+        jp vmLoop
+lsSkip:
+        pop hl
+        ld (VM_PC), hl
+        jp vmLoop
+
+; LOOP_END body: count one pass; go back to 'body' unless that was the last
+opLoopEnd:
+        call breakPoll
+        call fetchWord
+        ld hl, (VM_LSP)
+        dec hl
+        dec hl                  ; HL -> the counter on top
+        push de                 ; the address of the body
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        dec de
+        ld a, d
+        or e
+        jr z, leDone
+        ld (hl), d
+        dec hl
+        ld (hl), e
+        pop hl
+        ld (VM_PC), hl
+        jp vmLoop
+leDone:
+        ld hl, (VM_LSP)
+        dec hl
+        dec hl
+        ld (VM_LSP), hl
+        pop de
+        jp vmLoop
+
+; LOOP_POP: drop the counter of a REPEAT that STOP is leaving
+opLoopPop:
+        ld hl, (VM_LSP)
+        dec hl
+        dec hl
+        ld (VM_LSP), hl
+        jp vmLoop
+
+opCall:
+        call breakPoll
+        call fetchWord          ; DE = the procedure's address
+        push de
+        ld hl, (VM_PC)
+        ex de, hl
+        call rPush              ; return to the instruction after the CALL
+        pop hl
+        ld (VM_PC), hl
+        jp vmLoop
+
+opRet:
+        call rPop
+        ld (VM_PC), de
+        jp vmLoop
+
+; BIND_VAR slot: remember the slot's old value, then pop the argument into it
+opBindVar:
+        call fetchByte
+        ld c, a
+        call varAddr
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        call sPush
+        call vPop
+        call varAddr
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        jp vmLoop
+
+; UNBIND_VAR slot: put the saved value back (the entry knows its own slot)
+opUnbindVar:
+        call fetchByte
+        call sPop
+        call varAddr
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        jp vmLoop
+
+; ---------------------------------------------------------------------------
+; Turtle commands
+; ---------------------------------------------------------------------------
+
+opFd:
+        call vPop
+        ex de, hl
+        call turtleForward
+; vmTurtle - the end of every turtle command: refresh the LCD, then carry on
+vmTurtle:
+        call lcdStatus
+        jp vmLoop
+
+; BK n is FD -n.  -32768 would not negate, so it goes forward 32767 instead.
+opBk:
+        call vPop
+        ex de, hl
+        ld a, h
+        xor 80h
+        or l
+        jr nz, bkNeg
+        dec hl                  ; 8000h -> 7FFFh
+        jr bkGo
+bkNeg:
+        call negHL
+bkGo:
+        call turtleForward
+        jp vmTurtle
+
+opRt:
+        call vPop
+        ex de, hl
+        call turtleTurn
+        jp vmTurtle
+
+opLt:
+        call vPop
+        ex de, hl
+        call turtleLeft
+        jp vmTurtle
+
+opPu:
+        xor a
+        ld (TURTLE_PEN), a
+        jp vmTurtle
+
+opPd:
+        ld a, 1
+        ld (TURTLE_PEN), a
+        jp vmTurtle
+
+opHome:
+        call turtleHome
+        jp vmTurtle
+
+opCs:
+        call turtleClear
+        jp vmTurtle
+
+opSetX:
+        call vPop
+        ex de, hl
+        call turtleSetX
+        jp vmTurtle
+
+opSetY:
+        call vPop
+        ex de, hl
+        call turtleSetY
+        jp vmTurtle
+
+; SETXY: x was pushed first, y second
+opSetXY:
+        call vPop2              ; HL = x, DE = y
+        call turtleSetXY
+        jp vmTurtle
+
+; ---------------------------------------------------------------------------
+; Runtime errors
+; ---------------------------------------------------------------------------
+
+errBadOp:
+        ld iy, ERR_VM_BADO
+        jp errorHandler
+errVStack:
+        ld iy, ERR_VM_VSTK
+        jp errorHandler
+errRStack:
+        ld iy, ERR_VM_RSTK
+        jp errorHandler
+errSStack:
+        ld iy, ERR_VM_SSTK
+        jp errorHandler
+errLStack:
+        ld iy, ERR_VM_LSTK
+        jp errorHandler
+errBreak:
+        ld iy, ERR_VM_BREK
+        jp errorHandler
+errDiv0:
+        ld iy, ERR_VM_DIV0
+        jp errorHandler
+
+; ---------------------------------------------------------------------------
+; 16-bit maths
+; ---------------------------------------------------------------------------
+
+; negHL - HL = -HL.  Clobbers A.
+negHL:
+        ld a, l
+        cpl
+        ld l, a
+        ld a, h
+        cpl
+        ld h, a
+        inc hl
+        ret
+
+; cmpS - signed compare of HL with DE.
+; Output: carry when HL < DE, zero when HL = DE.  Clobbers A, HL, DE.
+; (Flipping both sign bits turns the signed compare into an unsigned one,
+; which cannot overflow.)
+cmpS:
+        ld a, h
+        xor 80h
+        ld h, a
+        ld a, d
+        xor 80h
+        ld d, a
+        or a
+        sbc hl, de
+        ret
+
+; mul16u - HL:DE = BC * DE, unsigned.  HL is the high word, DE the low word.
+; Clobbers A.  Keeps BC.
+mul16u:
+        ld hl, 0
+        ld a, 16
+mulLoop:
+        bit 0, e
+        jr z, mulNoAdd
+        add hl, bc              ; carry = bit 32 of the sum
+        jr mulShift
+mulNoAdd:
+        or a                    ; carry = 0
+mulShift:
+        rr h
+        rr l
+        rr d
+        rr e
+        dec a
+        jr nz, mulLoop
+        ret
+
+; mulS - signed HL * DE  ->  HL:DE = the 32-bit product (HL high, DE low)
+; Clobbers A, BC.
+mulS:
+        ld a, h
+        xor d
+        push af                 ; bit 7 = the sign of the result
+        bit 7, h
+        jr z, msA
+        call negHL
+msA:
+        ex de, hl
+        bit 7, h
+        jr z, msB
+        call negHL
+msB:
+        ld b, h
+        ld c, l                 ; BC = |b|, DE = |a|
+        call mul16u
+        pop af
+        ret p
+        ; negate the 32-bit HL:DE
+        ld a, e
+        cpl
+        ld e, a
+        ld a, d
+        cpl
+        ld d, a
+        ld a, l
+        cpl
+        ld l, a
+        ld a, h
+        cpl
+        ld h, a
+        inc de
+        ld a, d
+        or e
+        ret nz
+        inc hl
+        ret
+
+; divU16 - HL = HL / DE, unsigned.  DE must not be 0 and must be 8000h or less
+; (the remainder is kept in 16 bits).  Clobbers A, BC, DE.
+divU16:
+        ld a, h
+        ld c, l
+        ld hl, 0
+        ld b, 16
+dvLoop:
+        sla c
+        rla
+        adc hl, hl
+        or a
+        sbc hl, de
+        jr nc, dvSet
+        add hl, de
+        jr dvNext
+dvSet:
+        inc c
+dvNext:
+        djnz dvLoop
+        ld h, a
+        ld l, c
+        ret
+
+; divS16 - signed HL / DE  ->  HL, rounded towards zero.  Error on DE = 0.
+divS16:
+        ld a, d
+        or e
+        jp z, errDiv0
+        ld a, h
+        xor d
+        push af                 ; bit 7 = the sign of the quotient
+        bit 7, h
+        jr z, dsA
+        call negHL
+dsA:
+        ex de, hl
+        bit 7, h
+        jr z, dsB
+        call negHL
+dsB:
+        ex de, hl               ; HL = |a|, DE = |b|
+        call divU16
+        pop af
+        ret p
+        jp negHL
+
+; ---------------------------------------------------------------------------
+; BREAK
+; ---------------------------------------------------------------------------
+
+; breakPoll - stop the program when a key is down on the TEC keypad
+; Called at every loop pass and every procedure call, so nothing can run for
+; long without passing through here.  MON3's scanKeys does not wait: it returns
+; Z set when a key is pressed.  (rxByte, the serial read, waits for a byte, so
+; the terminal's keys cannot be polled this way.)
+; Keeps BC, DE and HL.  Does not return when it stops the program.
+breakPoll:
+        push bc
+        push de
+        ld c, KEY_SCAN
+        rst 10h
+        pop de
+        pop bc
+        ret nz                  ; no key
+        jp errBreak
+
+; traceInstr - send the instruction about to run to the terminal
+; Called from vmLoop while TRACE_ON is set (the TRACE command), so nothing is
+; live in any register.
+; disasmLine builds the text in DISASM_LINE, which shares the AST arena: that is
+; free while a program runs.
+traceInstr:
+        ld hl, (VM_PC)
+        call disasmLine         ; DISASM_LINE = "ADDR: MNEMONIC operand"
+        ld hl, DISASM_LINE
+        call serStr
+        jp serCRLF
+
+; vmUnwind - give every variable the value it had before the procedure calls
+; that were cut short, by popping the save stack empty.  Used by the REPL after
+; an error or a BREAK; after a normal run the stack is already empty.
+vmUnwind:
+        ld hl, (VM_SSP)
+        ld de, VM_SSTACK
+        or a
+        sbc hl, de
+        jr z, uwDone
+        jr c, uwDone            ; (never set up yet)
+        call sPop               ; DE = the value, C = its slot
+        call varAddr
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        jr vmUnwind
+uwDone:
+        ld hl, VM_SSTACK
+        ld (VM_SSP), hl
+        ret

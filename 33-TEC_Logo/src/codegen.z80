@@ -1,0 +1,619 @@
+; Code Generator for Logo
+; -----------------------
+
+; Walks the AST built by the parser and emits bytecode for the Logo VM.
+;
+; The bytecode is written from CODE_BASE upward; CODE_PTR is the next free byte.
+; Every instruction is one opcode byte followed by its operands:
+;     slot   = 1 byte
+;     value / address = 2 bytes, low byte first
+;
+; Every gen routine takes the AST node it should compile in HL, and leaves the
+; value stack of the VM exactly as the statement/expression defines:
+;     genExpr      : emits code that PUSHES the expression's value
+;     genStatement : emits code that leaves the value stack unchanged
+;
+; Covers the whole language: expressions, the turtle commands, MAKE, REPEAT,
+; IF/ELSE, and procedures (TO ... END) with CALL.
+;
+; Program layout:    JMP main
+;                    <procedure 0> <procedure 1> ...      (PROCTABLE order)
+;              main: <the main program>
+;                    HALT
+;
+; Jumps: a jump is emitted with a placeholder address (emitJump), the block it
+; jumps over is compiled, then the placeholder is patched (patchHere) to the
+; address that follows the block.
+
+; ---------------------------------------------------------------------------
+; Emit helpers
+; ---------------------------------------------------------------------------
+
+; emitByte - append one byte to the bytecode
+; Input : A = the byte
+; Output: none.   Clobbers A, HL, flags.  Keeps BC and DE.
+; Errors: ERR_GEN_FUL if the bytecode would reach the page in CODE_LIMIT
+emitByte:
+        push af
+        ld hl, (CODE_PTR)
+        ld a, (CODE_LIMIT)      ; first page we must not write into
+        cp h
+        jr z, emitFull
+        jr c, emitFull
+        pop af
+        ld (hl), a
+        inc hl
+        ld (CODE_PTR), hl
+        ret
+emitFull:
+        ld iy, ERR_GEN_FUL
+        jp errorHandler
+
+; emitWord - append a 16-bit value, low byte first
+; Input : DE = the value
+; Output: none.   Clobbers A, HL, flags.  Keeps BC and DE.
+emitWord:
+        ld a, e
+        call emitByte
+        ld a, d
+        jp emitByte
+
+; emitSlotOp - emit an opcode followed by a 1-byte variable slot
+; Input : A = the opcode, C = the slot
+; Keeps BC and DE.  Clobbers A, HL.
+emitSlotOp:
+        call emitByte
+        ld a, c
+        jp emitByte
+
+; emitJump - emit a jump-type opcode followed by a placeholder address
+; Input : A = OP_JMP, OP_JZ or OP_LOOP_START
+; Output: HL = address of the placeholder operand, so it can be patched later
+; Clobbers A, DE.
+emitJump:
+        call emitByte
+        ld hl, (CODE_PTR)       ; the operand will go here
+        push hl
+        ld de, 0
+        call emitWord           ; placeholder
+        pop hl                  ; HL = address of the operand
+        ret
+
+; patchWord - overwrite a 2-byte operand that was emitted earlier
+; Input : HL = address of the operand, DE = the new value
+patchWord:
+        ld (hl), e
+        inc hl
+        ld (hl), d
+        ret
+
+; patchHere - make a jump operand point at the current end of the bytecode
+; Input : HL = address of the operand (as returned by emitJump)
+patchHere:
+        ld de, (CODE_PTR)
+        jp patchWord
+
+; ---------------------------------------------------------------------------
+; Program
+; ---------------------------------------------------------------------------
+
+; codegenInit - once, at start-up (and for NEW): forget all compiled procedures
+codegenInit:
+        ld hl, PROC_CODE_BASE
+        ld (PROC_CODE_PTR), hl
+        ret
+
+; genProgram - compile what the parser just built.  There are two code areas:
+;
+;   PROC_CODE_BASE ..  permanent.  Every procedure is compiled once, when it is
+;                      first seen, and stays here; PROC_CODE_PTR is the end.
+;   MAIN_BASE ..       scratch.  The statements of the current line, ending in
+;                      HALT.  It is overwritten by the next line.
+;
+; Input : AST_ROOT, PROCTABLE and PROC_COUNT (set by parseProgram)
+; Output: the program to run starts at MAIN_BASE
+genProgram:
+        ld hl, (PROC_CODE_PTR)
+        ld (CODE_PTR), hl
+        ld a, PROC_LIMIT_HI
+        ld (CODE_LIMIT), a
+        call genProcedures      ; only the ones that are new
+        ld hl, (CODE_PTR)
+        ld (PROC_CODE_PTR), hl
+        ld hl, MAIN_BASE
+        ld (CODE_PTR), hl
+        ld a, MAIN_LIMIT_HI
+        ld (CODE_LIMIT), a
+        ld hl, 0
+        ld (CUR_PROC), hl       ; not inside a procedure
+        xor a
+        ld (LOOP_DEPTH), a
+        ld hl, (AST_ROOT)
+        call genStatementList
+        ld a, OP_HALT
+        jp emitByte
+
+; genProcedures - compile the procedures that are not compiled yet, in
+; PROCTABLE order
+genProcedures:
+        ld a, (PROC_COUNT)
+        or a
+        ret z
+        ld b, a                 ; B = procedures left
+        ld hl, PROCTABLE
+gpLoop:
+        push bc                 ; [count]
+        push hl                 ; [entry, count]
+        ld de, PROC_DONE
+        add hl, de
+        ld a, (hl)
+        or a                    ; already compiled by an earlier line?
+        pop hl                  ; HL = this entry (the flags survive pop/push)
+        push hl                 ; [entry, count]
+        call z, genProcedure
+        pop hl                  ; HL = this entry
+        ld bc, PROC_SIZE
+        add hl, bc              ; HL = the next entry
+        pop bc                  ; B = count
+        djnz gpLoop
+        ret
+
+; genProcedure - compile one procedure
+;
+;       BIND_VAR p0 ... BIND_VAR pn   first parameter first: each pops an argument
+;       <body>
+;       UNBIND_VAR pn ... UNBIND_VAR p0   in the opposite order
+;       RET
+;
+; The entry's body pointer is no longer needed once the body is compiled, so
+; the field (PROC_ADDR, the same offset) is reused to hold this procedure's
+; BYTECODE address.  That is set BEFORE the body is compiled, so a recursive
+; call inside the body already knows where to jump.  PROC_DONE is set at the
+; same time; genCall refuses a procedure that is not compiled yet.
+; Input : HL = the ProcDef entry
+genProcedure:
+        push hl                 ; [entry]
+        ld bc, PROC_BODY
+        add hl, bc              ; HL = &entry->body
+        ld e, (hl)
+        inc hl
+        ld d, (hl)              ; DE = the body list
+        dec hl
+        push de                 ; [body, entry]
+        ld de, (CODE_PTR)
+        ld (hl), e
+        inc hl
+        ld (hl), d              ; the field now holds this procedure's bytecode address
+        pop de                  ; DE = body list
+        pop hl                  ; HL = entry
+        push de                 ; [body]
+        push hl                 ; [entry, body]
+        ld bc, PROC_DONE
+        add hl, bc
+        ld (hl), 1              ; compiled: calls to it are allowed from now on
+        pop hl                  ; HL = entry
+        push hl                 ; [entry, body]
+        ld bc, PROC_NPARAMS
+        add hl, bc
+        ld b, (hl)              ; B = number of parameters
+        inc hl
+        ex de, hl               ; DE = &params[0]
+        ld a, b
+        or a
+        jr z, gpBody
+gpBind:
+        ld a, (de)
+        ld c, a                 ; C = the parameter's slot
+        ld a, OP_BIND_VAR
+        call emitSlotOp
+        inc de
+        djnz gpBind
+gpBody:
+        pop de                  ; DE = entry
+        pop hl                  ; HL = body list
+        push de                 ; [entry]
+        ld (CUR_PROC), de       ; STOP needs to know which procedure it is in
+        xor a
+        ld (LOOP_DEPTH), a
+        call genStatementList
+        pop hl                  ; HL = entry
+
+; genEpilogue - the end of a procedure: give the parameters their old values
+; back, then RET.  A STOP inside the procedure compiles to the same thing.
+; Input : HL = the ProcDef entry
+genEpilogue:
+        ld bc, PROC_NPARAMS
+        add hl, bc
+        ld b, (hl)              ; B = number of parameters
+        ld a, b
+        or a
+        jr z, gpRet
+        ld e, b
+        ld d, 0
+        add hl, de              ; HL = entry + PROC_NPARAMS + n = &params[n-1]
+        ex de, hl               ; DE = the last parameter's slot
+gpUnbind:
+        ld a, (de)
+        ld c, a
+        ld a, OP_UNBIND_VAR
+        call emitSlotOp
+        dec de
+        djnz gpUnbind
+gpRet:
+        ld a, OP_RET
+        jp emitByte
+
+; genCall - a procedure call      Node: [type][next][proc][argc][arg 0][arg 1]...
+;
+;       <last argument> ... <first argument>   pushed in REVERSE order, so the
+;                                              first parameter pops the first
+;       CALL address
+; Errors with ERR_GEN_FWD if the procedure has not been compiled yet.  That can
+; only happen when TO is nested inside another procedure and called before it.
+; Input : HL = the CALL node
+genCall:
+        push hl                 ; [node]
+        ld c, NODE_PROC
+        call getField           ; HL = the ProcDef entry
+        ld bc, PROC_DONE
+        add hl, bc
+        ld a, (hl)
+        or a
+        jr nz, gcCompiled
+        ld iy, ERR_GEN_FWD
+        jp errorHandler
+gcCompiled:
+        pop hl                  ; HL = node
+        push hl                 ; [node]
+        ld bc, NODE_ARGC
+        add hl, bc
+        ld b, (hl)              ; B = number of arguments
+        ld a, b
+        or a
+        jr z, gcEmit            ; none
+        pop hl                  ; HL = node
+        push hl                 ; [node]
+        ld de, NODE_ARGS
+        add hl, de              ; HL = &args[0]
+        ld a, b
+        dec a
+        add a, a
+        ld e, a
+        ld d, 0
+        add hl, de              ; HL = the LAST argument's pointer slot
+gcArg:
+        push bc                 ; [count, node]
+        push hl                 ; [slot, count, node]
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl               ; HL = the argument expression
+        call genExpr
+        pop hl                  ; HL = this argument's slot
+        pop bc                  ; B = arguments left
+        dec hl
+        dec hl                  ; the slot before it
+        djnz gcArg
+gcEmit:
+        pop hl                  ; HL = node
+        ld c, NODE_PROC
+        call getField           ; HL = the ProcDef entry
+        ld bc, PROC_ADDR
+        add hl, bc
+        ld e, (hl)
+        inc hl
+        ld d, (hl)              ; DE = the procedure's bytecode address
+        ld a, OP_CALL
+        call emitByte
+        jp emitWord
+
+; genStatementList - compile a chain of statement nodes, in order
+; Input : HL = first node (0 = empty list)
+; A loop, not recursion, so a long program costs no stack.
+genStatementList:
+        ld a, h
+        or l
+        ret z                   ; end of the list
+        push hl                 ; [node]
+        call genStatement
+        pop hl
+        ld bc, NODE_NEXT
+        add hl, bc              ; HL = &node->next
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl               ; HL = the next node
+        jr genStatementList
+
+; genStatement - compile one statement node
+; Input : HL = the node
+genStatement:
+        ld a, (hl)              ; A = node type
+        cp CMD_MAKE
+        jp z, genMake
+        cp CMD_REPEAT
+        jp z, genRepeat
+        cp CMD_IF
+        jp z, genIf
+        cp CMD_CALL
+        jp z, genCall
+        cp CMD_STOP
+        jp z, genStop
+        cp CMD_REPEAT           ; anything else from 11 up is not a statement we know
+        jp nc, genUnsupported
+        ; otherwise it is one of the turtle commands CMD_FD .. CMD_CS (0-10)
+
+; genTurtle - the turtle commands
+; The opcode is just the command number plus OP_FD (the two lists are in the
+; same order).  How many expressions it takes comes from the cmdArgs table.
+; Input : A = CMD_xx (0-10), HL = the node
+genTurtle:
+        ld e, a
+        ld d, 0
+        push hl                 ; [node]
+        ld hl, cmdArgs
+        add hl, de
+        ld b, (hl)              ; B = number of arguments: 0, 1 or 2
+        ld a, e
+        add a, OP_FD            ; A = the opcode
+        pop hl                  ; HL = node
+        push af                 ; [opcode]
+        ld a, b
+        or a
+        jr z, gtEmit            ; no arguments: PU PD HOME CS
+        cp 2
+        jr z, gtTwo
+        ld c, NODE_ARG          ; one argument
+        call genNodeExpr
+        jr gtEmit
+gtTwo:                          ; SETXY: x first, then y
+        push hl                 ; [node, opcode]
+        ld c, NODE_ARG
+        call genNodeExpr        ; x
+        pop hl                  ; HL = node
+        ld c, NODE_ARG2
+        call genNodeExpr        ; y
+gtEmit:
+        pop af                  ; A = the opcode
+        jp emitByte
+
+; Number of expressions each turtle command takes, indexed by CMD_xx
+cmdArgs:
+        db 1, 1, 1, 1           ; FD BK RT LT
+        db 0, 0, 0              ; PU PD HOME
+        db 2                    ; SETXY
+        db 1, 1                 ; SETX SETY
+        db 0                    ; CS  (the VM clears the screen AND homes the turtle)
+
+; genMake - MAKE "NAME <expr>      Node: [type][next][arg][slot]
+;   the value, then STORE_VAR slot
+genMake:
+        push hl                 ; [node]
+        ld c, NODE_ARG
+        call genNodeExpr        ; push the value
+        pop hl                  ; HL = node
+        ld bc, NODE_SLOT
+        add hl, bc
+        ld c, (hl)              ; C = the variable's slot
+        ld a, OP_STORE_VAR
+        call emitByte
+        ld a, c
+        jp emitByte
+
+; genRepeat - REPEAT <expr> [ body ]     Node: [type][next][arg][body]
+;
+;       <count>
+;       LOOP_START done     pops the count; if it is 0 or negative, jump to done
+;   top:                    (top is just after LOOP_START's operand)
+;       <body>
+;       LOOP_END top        counts down; jumps back to top until it reaches 0
+;   done:
+genRepeat:
+        push hl                 ; [node]
+        ld c, NODE_ARG
+        call genNodeExpr        ; the count
+        pop hl                  ; HL = node
+        ld c, NODE_BODY
+        call getField           ; HL = the body list
+        push hl                 ; [body]
+        ld a, OP_LOOP_START
+        call emitJump           ; HL = address of the 'done' operand
+        pop de                  ; DE = body list
+        push hl                 ; [done operand]
+        ex de, hl               ; HL = body list
+        push hl
+        ld hl, LOOP_DEPTH
+        inc (hl)                ; a STOP in the body must drop this loop's counter
+        pop hl
+        call genStatementList
+        ld hl, LOOP_DEPTH
+        dec (hl)
+        ld a, OP_LOOP_END
+        call emitByte
+        pop hl                  ; HL = done operand
+        push hl
+        inc hl
+        inc hl
+        ex de, hl               ; DE = done operand + 2 = start of the body
+        call emitWord           ; LOOP_END jumps back to the body
+        pop hl                  ; HL = done operand
+        jp patchHere            ; LOOP_START now skips to here
+
+; genStop - STOP: leave the procedure it is in (the main line: end the line)
+;
+;       LOOP_POP     once for every REPEAT the STOP is inside, to drop its counter
+;       UNBIND_VAR ... RET     as at the end of the procedure
+; In the main line, which has no parameters, it is LOOP_POPs and HALT.
+genStop:
+        ld a, (LOOP_DEPTH)
+        ld b, a
+        or a
+        jr z, gsExit
+gsPop:
+        ld a, OP_LOOP_POP
+        call emitByte           ; keeps BC
+        djnz gsPop
+gsExit:
+        ld hl, (CUR_PROC)
+        ld a, h
+        or l
+        jp nz, genEpilogue      ; HL = the procedure's entry
+        ld a, OP_HALT
+        jp emitByte
+
+; genIf - IF <cond> [ then ] ( [ else ] )?    Node: [type][next][cond][body][else]
+;
+;       <cond>              leaves 1 or 0
+;       JZ else             (or JZ end when there is no else block)
+;       <then>
+;       JMP end             only when there is an else block
+;   else:
+;       <else>
+;   end:
+genIf:
+        push hl                 ; [node]
+        ld c, NODE_COND
+        call getField           ; HL = the condition node
+        call genCond            ; leaves 1 or 0 on the VM stack
+        pop hl                  ; HL = node
+        ld bc, NODE_BODY
+        add hl, bc
+        ld e, (hl)
+        inc hl
+        ld d, (hl)              ; DE = then list
+        inc hl                  ; the else pointer is the field after the body
+        ld c, (hl)
+        inc hl
+        ld b, (hl)              ; BC = else list (0 = none)
+        push bc                 ; [else]
+        push de                 ; [then, else]
+        ld a, OP_JZ
+        call emitJump           ; HL = JZ's operand
+        pop de                  ; DE = then list
+        push hl                 ; [jz, else]
+        ex de, hl               ; HL = then list
+        call genStatementList
+        pop hl                  ; HL = JZ's operand
+        pop de                  ; DE = else list
+        ld a, d
+        or e
+        jr z, ifNoElse
+        push hl                 ; [jz]
+        push de                 ; [else, jz]
+        ld a, OP_JMP
+        call emitJump           ; HL = JMP's operand
+        pop de                  ; DE = else list
+        ex (sp), hl             ; HL = JZ's operand, [jmp]
+        push de                 ; [else, jmp]
+        call patchHere          ; JZ lands here: the start of the else block
+        pop hl                  ; HL = else list
+        call genStatementList
+        pop hl                  ; HL = JMP's operand
+        jp patchHere            ; JMP lands here: the end of the whole IF
+ifNoElse:
+        jp patchHere            ; JZ lands here: just after the then block
+
+; genCond - a condition node: [relop][left][right]
+; Same shape as a binary operator, and the opcodes are in RelOp order, so
+; the opcode is just OP_CMP_EQ + relop.
+; Input : HL = the condition node
+genCond:
+        ld a, (hl)
+        add a, OP_CMP_EQ
+        jp genBinary
+
+; genUnsupported - a node type that has no code generator yet
+genUnsupported:
+        ld iy, ERR_GEN_UNS
+        jp errorHandler
+
+; ---------------------------------------------------------------------------
+; Expressions
+; ---------------------------------------------------------------------------
+
+; getField - read a pointer field out of a node
+; Input : HL = the node, C = offset of the pointer field
+; Output: HL = the pointer.   Clobbers B, DE.
+getField:
+        ld b, 0
+        add hl, bc              ; HL = &node->field
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl
+        ret
+
+; genNodeExpr - compile the expression a node points to
+; Input : HL = the node, C = offset of the pointer field (NODE_ARG, NODE_ARG2 ...)
+; Clobbers B.
+genNodeExpr:
+        call getField
+        ; falls into genExpr
+
+; genExpr - emit code that leaves the expression's value on the VM value stack
+; Input : HL = an ExprNode
+genExpr:
+        ld a, (hl)
+        or a                    ; EXPR_NUM is 0
+        jr z, genNum
+        cp EXPR_VAR
+        jr z, genVar
+        cp EXPR_NEG
+        jr z, genNeg
+        cp EXPR_END             ; anything above EXPR_DIV is not a known node
+        jp nc, genUnsupported
+        ; EXPR_ADD .. EXPR_DIV: EXPR_ADD..EXPR_DIV and OP_ADD..OP_DIV are the
+        ; same numbers, so the node's type byte IS the opcode.  falls into genBinary
+
+; genBinary - a node shaped [x][left][right]: left, then right, then the opcode
+; Input : A = the opcode to emit afterwards, HL = the node
+genBinary:
+        push af                 ; [opcode]
+        push hl                 ; [node, opcode]
+        inc hl
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl               ; HL = left
+        call genExpr
+        pop hl                  ; HL = node
+        inc hl
+        inc hl
+        inc hl                  ; HL = &node->right
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl               ; HL = right
+        call genExpr
+        pop af                  ; A = the opcode
+        jp emitByte
+
+; EXPR_NUM: [type][value lo][value hi]   ->   PUSH_CONST value
+genNum:
+        inc hl
+        ld e, (hl)
+        inc hl
+        ld d, (hl)              ; DE = the value
+        ld a, OP_PUSH_CONST
+        call emitByte
+        jp emitWord
+
+; EXPR_VAR: [type][slot]                 ->   PUSH_VAR slot
+genVar:
+        inc hl
+        ld c, (hl)              ; C = slot
+        ld a, OP_PUSH_VAR
+        call emitByte
+        ld a, c
+        jp emitByte
+
+; EXPR_NEG: [type][operand]              ->   <operand> NEG
+genNeg:
+        inc hl
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl               ; HL = the operand
+        call genExpr
+        ld a, OP_NEG
+        jp emitByte

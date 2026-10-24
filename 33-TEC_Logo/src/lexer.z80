@@ -1,0 +1,389 @@
+; Lexical Analyzer for Logo
+; -------------------------
+
+; Test that current token is what is expected, if not, throw an error with the given message.
+; Then move to the next token.  This is used by the parser to ensure that the current token matches
+; the expected token type.
+; Input: A = expected token type, IY = error message index
+expectToken:
+        push bc
+        push hl
+        ld b, a         ;save expected token type in B
+        call peek
+        cp b            ;compare current token type with expected
+        pop hl
+        pop bc
+        jr z, advance   ;move to next token if match and return
+        ; if not match, throw error with message in IY
+        jp errorHandler
+
+; Return the current token type.  This is used by the parser to peek at the next token without
+; consuming it.  It assumes that TOKEN_PTR points to the first entry in the token node.
+; Output: A = token type (0-34) of the next token in the token buffer
+peek:
+        ld hl, (TOKEN_PTR)
+        ld a, (hl)
+        ret
+
+; Move to the next token in the token buffer.  This is used by the parser to consume the current
+; token and move to the next one.  There are three types of token nodes: 1 byte for keywords,
+; 3 bytes for numbers, and variable length for named tokens (TOK_QUOTED_WORD, TOK_VARREF, TOK_IDENT).
+; Output: A = token type (0-34) of the next token in the token buffer
+advance:
+        ld hl, (TOKEN_PTR)  ;Must be on a token node, not at the end of the buffer
+        ld a, (hl)          ; get the token type
+        cp TOK_NUMBER
+        jr nz, advanceNotNumber
+        ; it's a number, skip 3 bytes
+        inc hl
+        inc hl
+        inc hl
+updateTokenPtr:
+        ld (TOKEN_PTR), hl ; update token buffer pointer
+        ld a, (hl)          ; get the next token type
+        ret
+advanceNotNumber:
+        ; check if it's a named token (TOK_QUOTED_WORD, TOK_VARREF, TOK_IDENT)
+        cp TOK_QUOTED_WORD
+        jr z, advanceNamedLoop
+        cp TOK_VARREF
+        jr z, advanceNamedLoop
+        cp TOK_IDENT
+        jr nz, advanceNotNamed
+        ; it's a named token, skip until we find the high bit set (end of string)
+advanceNamedLoop:
+        inc hl
+        ld a, (hl)
+        bit 7, a
+        jr z, advanceNamedLoop
+        inc hl ; skip the high bit terminator
+        jr updateTokenPtr
+advanceNotNamed:
+        ; it's a keyword, skip 1 byte
+        inc hl
+        jr updateTokenPtr
+
+; Store a keyword token to the token buffer
+; Input A: token type (0-34) in A
+emitKeyword:
+;todo: maybe check for max token size here and throw and error if exceeded
+        ld hl, (TOKEN_PTR)
+        ld (hl), a       ; store token type
+        inc hl
+        ld (TOKEN_PTR), hl ; update token buffer pointer
+        ret
+
+; Store a numeric token to the token buffer
+; Input A: token type (0-34) in A, token value in BC
+emitNumeric:
+;todo: maybe check for max token size here and throw and error if exceeded
+        ld hl, (TOKEN_PTR)
+        ld (hl), a       ; store token type
+        inc hl
+        ld (hl), c       ; store token value low byte
+        inc hl
+        ld (hl), b       ; store token value high byte
+        inc hl
+        ld (TOKEN_PTR), hl ; update token buffer pointer
+        ret
+
+; Store a named token to the token buffer, only used for TOK_QUOTED_WORD, TOK_VARREF, and TOK_IDENT
+; Input A: token type (0-34) in A, BC points to name string
+emitNamed:
+;todo: maybe check for max token size here and throw and error if exceeded
+        ld hl, (TOKEN_PTR)
+        ld (hl), a       ; store token type
+        inc hl
+        ;store the name string to the token buffer, exit on null terminator
+emitNamedLoop:
+        ld a, (bc)       ; load first byte of name string
+        ld (hl), a       ; store first byte of name string
+        inc hl
+        inc bc
+        bit 7, a          ; check if we reached the end of the string (null terminator)
+        jr z, emitNamedLoop ; if yes, we're done
+        ld (TOKEN_PTR), hl ; update token buffer pointer
+        ret
+
+; Match a keyword against the list of known keywords, input must be uppercase
+; Input: DE points to the Uppercase keyword string.
+; Returns: A = token type if matched, 0 if not matched
+matchKeyword:
+        ld hl, keywords
+newKeyword:
+        push de         ; save DE (keyword string) on stack
+compareLoop:
+        ld a, (de)       ; load first byte of keyword string
+        ld c, a          ; store the uppercase character in C
+        ld a, (hl)       ; load first byte of keyword list
+        or a            ; check for null terminator (end of list)
+        jr z, matchFound ; if yes, we reached the end of the list without a match
+        cp c
+        jr nz, nextKeyword
+        inc de
+        inc hl
+        ; matched first character, now check the rest of the keyword
+        bit 7, a          ; check if we reached the end of the keyword list (null terminator)
+        jr z, compareLoop ; if not, continue comparing
+        ; its a match, return the token type in A
+        ld a, (hl)       ; load the token type
+matchFound:
+        pop de          ; restore DE
+        ret
+nextKeyword:
+        ; skip to the next keyword in the list
+        bit 7, a          ; check if we reached the end of the keyword list (null terminator)
+        inc hl
+        ld a, (hl)       ; load the next character of the keyword list
+        jr z, nextKeyword ; if not, continue to the next keyword
+        inc hl
+        pop de
+        jr newKeyword
+
+keywords:
+        db "F", "D" + 128, TOK_FD
+        db "B", "K" + 128, TOK_BK
+        db "R", "T" + 128, TOK_RT
+        db "L", "T" + 128, TOK_LT
+        db "P", "U" + 128, TOK_PU
+        db "P", "D" + 128, TOK_PD
+        db "HOM", "E" + 128, TOK_HOME
+        db "SETX", "Y" + 128, TOK_SETXY
+        db "SET", "X" + 128, TOK_SETX
+        db "SET", "Y" + 128, TOK_SETY
+        db "C", "S" + 128, TOK_CS
+        db "REPEA", "T" + 128, TOK_REPEAT
+        db "MAK", "E" + 128, TOK_MAKE
+        db "I", "F" + 128, TOK_IF
+        db "T", "O" + 128, TOK_TO
+        db "EN", "D" + 128, TOK_END
+        db "STO", "P" + 128, TOK_STOP
+        db 0 ; end of list
+
+; isAlpha - check if A is alphabetic (A-Z or a-z)
+; Input:  A = character
+; Output: Carry set if alphabetic, carry clear otherwise
+isAlpha:
+        cp 'A'             ; A < 'A'?
+        jr c, notAlpha     ; yes → not alpha (C clear)
+        cp 'Z'+1           ; A <= 'Z'?
+        jr c, yesAlpha     ; yes → alpha (C set)
+        cp 'a'             ; A < 'a'?
+        jr c, notAlpha     ; yes → not alpha
+        cp 'z'+1           ; A <= 'z'?
+        jr c, yesAlpha     ; invert: C set if A <= 'z'
+notAlpha:
+        or a
+        ret
+yesAlpha:
+        scf
+        ret
+
+; isDigit: Checks if A is a decimal digit ('0'-'9')
+; Input:  A = character to test
+; Output: Carry flag SET if digit, CLEAR if not
+isDigit:
+        cp '0'         ; Compare with '0' (30h)
+        jr c, notDigit ; If A < '0', not a digit
+        cp '9'+1       ; Compare with '9'+1 (3Ah)
+        jr nc, notDigit ; If A > '9', not a digit
+        scf                 ; Set carry - it IS a digit
+        ret
+notDigit:
+        or a           ; Clear carry flag
+        ret
+
+; getString - get a null-terminated string from DE, store it in the string scratch buffer
+; Input: DE points to the source string
+; Output: STRING_SCRATCH contains the high bit terminated string
+getString:
+        ld hl, STRING_SCRATCH
+        ld b, 8          ; max length of string
+getStringLoop:
+        ld a, (de)       ; load the next character from the source string
+        call isAlpha     ; check if it's alphabetic
+        jr nc, getStringDone ; if not alphabetic, we're done
+        res 5, a         ; fold to upper case (a-z -> A-Z, A-Z unchanged)
+        dec b
+        ld iy, ERR_LEX_ST   ; Error index for string too long
+        jp m, errorHandler ; if we exceeded the max length, error
+        ld (hl), a       ; store it in the scratch buffer
+        inc hl
+        inc de
+        jr getStringLoop
+getStringDone:
+        dec de
+        dec hl
+        set 7, (hl)        ; set the high bit of the last character to terminate the string
+        ret
+
+; stringToInt16 - convert a null-terminated string of digits to a 16-bit integer
+; input: DE points to the string
+; output: HL contains the integer value (0-65535)
+; destroys: A, BC
+; Errors with ERR_LEX_NL if the value does not fit in 16 bits.
+stringToInt16:
+        ld hl,0
+stringToInt16Loop:
+        ld a,(de)
+        or a
+        ret z
+        sub 30h
+        cp 10
+        ret nc
+        inc de
+        ld b,h
+        ld c,l              ; BC = value so far
+        add hl,hl           ; x2
+        add hl,hl           ; x4
+        add hl,bc           ; x5
+        add hl,hl           ; x10
+        jr c,stringToInt16Error ; value*10 no longer fits in 16 bits
+        ld c,a
+        ld b,0
+        add hl,bc           ; add the digit as a 16-bit add (a carry out of L is normal)
+        jr nc,stringToInt16Loop
+stringToInt16Error:
+        ld iy, ERR_LEX_NL   ; number too large for 16 bits
+        jp errorHandler
+
+; Lexical Analyzer for Logo.  Stores the input as tokens in the token buffer, starting at TOKEN_BASE.
+; The token buffer is a sequence of bytes, each representing a token type (0-34).  For TOK_NUMBER, 
+; the next two bytes are the numeric value (little-endian).
+; For TOK_QUOTED_WORD, TOK_VARREF, and TOK_IDENT, the next bytes are the name string bit 7 terminated.
+; Input: DE points to the source string
+lex:
+        ; get the next character from the source string
+        ld a, (de)
+        or a
+        jp z, lexDone ; if null terminator, we're done
+        ; skip whitespace: space, tab, CR, LF - anything below '!' (21h)
+        cp 21h
+        jp c, lexNextChar
+        ; check for punctuation.  Requires tokens to be in the correct order!
+        ld hl, punctuation
+        ld bc, 9
+        cpir
+        jr nz, lexRelOp ; if not punctuation, check for relational operators
+        ld a, TOK_EQUAL ; base token type for punctuation
+        sub c           ; left over count
+        call emitKeyword ; emit the punctuation token
+        jp lexNextChar
+punctuation: 
+        db "[]+-*/()="  ;punctuation characters to match against
+        ; check for relational operators.  Need to look ahead for <=, >=, and <>
+lexRelOp:
+        cp '<'
+        jr nz, lexGreat
+        inc de ; Peek at next character
+        ld a, (de)
+        cp '='
+        jr nz, lexNotEqual
+        ld a, TOK_LESSEQ  ; set as <=
+        call emitKeyword
+        jp lexNextChar
+lexNotEqual:
+        cp '>'
+        jr nz, lexLess
+        ld a, TOK_NOTEQUAL
+        call emitKeyword  ; set as <>
+        jp lexNextChar
+lexLess:
+        dec de   ; restore DE to '<' Character
+        ld a, TOK_LESS
+        call emitKeyword
+        jp lexNextChar
+lexGreat:
+        cp '>'
+        jr nz, lexQuoted
+        inc de ; Peek at next character
+        ld a, (de)
+        cp '='
+        jr nz, lexGreater
+        ld a, TOK_GREATEREQ  ; set as >=
+        call emitKeyword
+        jp lexNextChar
+lexGreater:
+        dec de   ; restore DE to '<' Character
+        ld a, TOK_GREATER
+        call emitKeyword
+        jp lexNextChar
+; check for quoted word ie: "NAME - the literal name MAKE assigns to 
+lexQuoted:
+        cp 22h ; Double quote character
+        jr nz, lexVarRef
+        inc de ; Peek at next character
+        ld a, (de)
+        call isAlpha
+        ld iy, ERR_LEX_QW   ; Error index for quoted word expected
+        jp nc, errorHandler ; if not alphabetic, error
+        call getString ; get the name string and store in STRING_SCRATCH
+        ld bc, STRING_SCRATCH
+        ld a, TOK_QUOTED_WORD
+        call emitNamed
+        jp lexNextChar
+; check for variable reference ie: :NAME - a variable reference
+lexVarRef:
+        cp ':'
+        jr nz, lexNumber
+        inc de ; Peek at next character
+        ld a, (de)
+        call isAlpha
+        ld iy, ERR_LEX_VR   ; Error index for variable reference expected
+        jp nc, errorHandler ; if not alphabetic, error
+        call getString ; get the name string and store in STRING_SCRATCH
+        ld bc, STRING_SCRATCH
+        ld a, TOK_VARREF
+        call emitNamed
+        jp lexNextChar
+lexNumber:
+        call isDigit
+        jr nc, lexWord ; if not a digit, check word
+        ld hl,STRING_SCRATCH
+        ld b, 5          ; max length of numeric string, max is 65535 (5 digits)
+lexNumberLoop:
+        ld (hl),a       ;store first digit
+        dec b
+        ld iy, ERR_LEX_NL   ; Error index for number too long
+        jp m, errorHandler ; if we exceeded the max length, error
+        inc hl
+        inc de
+        ld a,(de)
+        call isDigit
+        jr c, lexNumberLoop
+        ; no more digits, convert the string to a number
+        dec de ; restore DE to last digit
+        ld (hl),0 ; null terminate the string
+        push de
+        ld de,STRING_SCRATCH
+        call stringToInt16 ; convert the string to a 16-bit integer in HL
+        pop de
+        push hl
+        pop bc             ; store the 16-bit integer in BC
+        ld a, TOK_NUMBER
+        call emitNumeric
+        jp lexNextChar
+lexWord:
+        call isAlpha
+        ld iy, ERR_LEX_IC   ; Error index for invalid character
+        jp nc, errorHandler ; if not alphabetic, so an invalid character
+        call getString ; get the name string and store in STRING_SCRATCH
+        push de
+        ld de,STRING_SCRATCH
+        call matchKeyword ; check if the string is a keyword
+        pop de
+        ld bc,STRING_SCRATCH
+        or a            ; is there a match?
+        jr z, lexIdent
+        call emitKeyword ; if yes, emit the keyword token
+        jr lexNextChar
+lexIdent:
+        ld a, TOK_IDENT
+        call emitNamed
+lexNextChar:
+        inc de
+        jp lex
+lexDone:
+        ld a, TOK_EOF
+        call emitKeyword
+        ret

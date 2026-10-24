@@ -1,0 +1,585 @@
+; Turtle graphics for the Logo VM
+; -------------------------------
+
+; The turtle lives on the 128x64 ST7920 GLCD and is drawn through MON3 API calls.
+;
+; State (see the globals for the addresses):
+;     TURTLE_X, TURTLE_Y   4 bytes each, signed 32-bit, in 1/256 of a pixel
+;     TURTLE_H             2 bytes, whole degrees 0..359   (0 = up, RT = clockwise)
+;     TURTLE_PEN           1 byte, 0 = up, 1 = down
+; TURTLE_X and TURTLE_Y must be next to each other, and TURTLE_X, TURTLE_Y and
+; TURTLE_H must be contiguous (turtleZero clears all 10 bytes in one go).
+; TMP_NX and TMP_NY (the position the turtle is moving to) must also be
+; next to each other: 8 bytes that are copied straight onto TURTLE_X/Y.
+;
+; Logo coordinates: (0,0) is the middle of the screen, x grows to the right and
+; y grows UP.  Screen pixel = (HOME_X + x, HOME_Y - y).
+;
+; Every move is worked out in fixed point and rounded to a pixel only when the
+; line is drawn, so rounding errors never pile up from one FD to the next.
+; After every line the GLCD buffer is plotted, so the drawing grows on the
+; screen one command at a time (Apple II style).
+;
+; The line is clipped to the screen here (drawSegment) so MON3 only ever sees
+; coordinates that fit in a byte.
+;
+; This file uses negHL, cmpS and mulS from vm.z80.
+
+; ---------------------------------------------------------------------------
+; GLCD (MON3 API)
+; ---------------------------------------------------------------------------
+
+; glcdLine - draw a line and plot it
+; Input : B = x1, C = y1, D = x2, E = y2   (x 0..127, y 0..63)
+glcdLine:
+        ld a, GLCD_LINE
+        rst 18h
+        ld a, GLCD_PLOT
+        rst 18h
+        ret
+
+; glcdClear - clear the graphics buffer and the display
+glcdClear:
+        ld a, GLCD_CLEAR_GBUF
+        rst 18h
+        ld a, GLCD_CLEAR
+        rst 18h
+        ret
+
+; turtleInit - set up the GLCD for graphics and put the turtle at home, pen down
+turtleInit:
+        ld a, GLCD_INIT
+        rst 18h
+        ld a, GLCD_GRAPHICS
+        rst 18h
+        ld a, GLCD_NOCLEAR
+        rst 18h
+        call glcdClear
+        call turtleZero
+        ld a, 1
+        ld (TURTLE_PEN), a
+        ret
+
+; ---------------------------------------------------------------------------
+; Commands.  Each takes its (signed 16-bit) argument in HL.
+; ---------------------------------------------------------------------------
+
+; turtleZero - position (0,0), heading 0.  The pen is left alone.
+turtleZero:
+        ld hl, TURTLE_X
+        ld d, h
+        ld e, l
+        inc de
+        ld bc, 9
+        ld (hl), 0
+        ldir
+        ret
+
+; turtleClear - CS: clear the screen and send the turtle home without drawing
+turtleClear:
+        call glcdClear
+        jp turtleZero
+
+; turtleHome - HOME: go to (0,0) (drawing a line when the pen is down), heading 0
+turtleHome:
+        ld hl, TMP_NX
+        ld d, h
+        ld e, l
+        inc de
+        ld bc, 7
+        ld (hl), 0
+        ldir
+        call moveTo
+        ld hl, 0
+        ld (TURTLE_H), hl
+        ret
+
+; turtleTurn - RT: turn clockwise by HL degrees (negative turns anticlockwise)
+turtleTurn:
+        call mod360
+        ld de, (TURTLE_H)
+        add hl, de
+        call mod360
+        ld (TURTLE_H), hl
+        ret
+
+; turtleLeft - LT: turn anticlockwise by HL degrees
+turtleLeft:
+        call mod360
+        ex de, hl
+        ld hl, 360
+        or a
+        sbc hl, de              ; 360 - n  (1..360)
+        jp turtleTurn
+
+; turtleForward - FD: move HL pixels along the heading (negative moves backwards)
+;       x += n * sin(h)        y += n * cos(h)
+turtleForward:
+        ld (TMP_N), hl
+        ld hl, (TURTLE_H)
+        call sin256
+        ld de, (TMP_N)
+        call mulS               ; HL:DE = n * sin * 256 / 256 (hi:lo)
+        push hl
+        ld hl, (TURTLE_X)
+        add hl, de
+        ld (TMP_NX), hl
+        pop de
+        ld hl, (TURTLE_X+2)
+        adc hl, de
+        ld (TMP_NX+2), hl
+
+        ld hl, (TURTLE_H)
+        call cos256
+        ld de, (TMP_N)
+        call mulS
+        push hl
+        ld hl, (TURTLE_Y)
+        add hl, de
+        ld (TMP_NY), hl
+        pop de
+        ld hl, (TURTLE_Y+2)
+        adc hl, de
+        ld (TMP_NY+2), hl
+        jp moveTo
+
+; turtleSetX - SETX: HL = the new x
+turtleSetX:
+        push hl
+        call copyPos
+        pop hl
+        ld de, TMP_NX
+        call putFixed
+        jp moveTo
+
+; turtleSetY - SETY: HL = the new y
+turtleSetY:
+        push hl
+        call copyPos
+        pop hl
+        ld de, TMP_NY
+        call putFixed
+        jp moveTo
+
+; turtleSetXY - SETXY: HL = the new x, DE = the new y
+turtleSetXY:
+        push de
+        ld de, TMP_NX
+        call putFixed
+        pop hl
+        ld de, TMP_NY
+        call putFixed
+        jp moveTo
+
+; copyPos - TMP_NX/NY = TURTLE_X/Y
+copyPos:
+        ld hl, TURTLE_X
+        ld de, TMP_NX
+        ld bc, 8
+        ldir
+        ret
+
+; putFixed - store the pixel value HL as a 32-bit 1/256 pixel number at (DE)
+putFixed:
+        xor a
+        ld (de), a
+        inc de
+        ld a, l
+        ld (de), a
+        inc de
+        ld a, h
+        ld (de), a
+        inc de
+        rla                     ; carry = sign
+        sbc a, a                ; 00 or FF
+        ld (de), a
+        ret
+
+; ---------------------------------------------------------------------------
+; Moving and drawing
+; ---------------------------------------------------------------------------
+
+; moveTo - go from TURTLE_X/Y to TMP_NX/NY, drawing a line if the pen is down
+moveTo:
+        ld hl, TMP_NX
+        call satPos
+        ld hl, TMP_NY
+        call satPos
+        ld a, (TURTLE_PEN)
+        or a
+        jr z, mvCommit
+        ld hl, TURTLE_X
+        call roundPos
+        ld de, HOME_X
+        add hl, de
+        ld (SEG_X1), hl
+        ld hl, TURTLE_Y
+        call roundPos
+        call toScreenY
+        ld (SEG_Y1), hl
+        ld hl, TMP_NX
+        call roundPos
+        ld de, HOME_X
+        add hl, de
+        ld (SEG_X2), hl
+        ld hl, TMP_NY
+        call roundPos
+        call toScreenY
+        ld (SEG_Y2), hl
+        call drawSegment
+mvCommit:
+        ld hl, TMP_NX
+        ld de, TURTLE_X
+        ld bc, 8
+        ldir
+        ret
+
+; toScreenY - HL = HOME_Y - HL
+toScreenY:
+        ex de, hl
+        ld hl, HOME_Y
+        or a
+        sbc hl, de
+        ret
+
+; roundPos - HL = pointer to a 32-bit 1/256 pixel number -> HL = nearest pixel
+roundPos:
+        ld a, (hl)
+        add a, 80h              ; carry when the fraction is 0.5 or more
+        inc hl
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl
+        ret nc
+        inc hl
+        ret
+
+; satPos - clamp the 32-bit number at (HL) to +-7680 pixels so the 16-bit
+; screen arithmetic below can never overflow
+satPos:
+        inc hl
+        inc hl
+        ld e, (hl)
+        inc hl
+        ld d, (hl)              ; DE = high word, HL -> its high byte
+        bit 7, d
+        jr nz, satNeg
+        ld a, d
+        or a
+        jr nz, satHi
+        ld a, e
+        cp 1Eh
+        ret c
+satHi:
+        ld e, 1Eh
+        ld d, 0
+        jr satStore
+satNeg:
+        ld a, d
+        inc a
+        jr nz, satLo
+        ld a, e
+        cp 0E2h
+        ret nc
+satLo:
+        ld e, 0E2h
+        ld d, 0FFh
+satStore:
+        ld (hl), d
+        dec hl
+        ld (hl), e
+        dec hl
+        xor a
+        ld (hl), a
+        dec hl
+        ld (hl), a
+        ret
+
+; outcode - Cohen-Sutherland region code of the point (HL, DE) = (x, y)
+; Output: A = bit0 x<0, bit1 x>127, bit2 y<0, bit3 y>63.  Clobbers HL, DE.
+outcode:
+        ld a, h
+        or a
+        jr z, ocXsmall
+        bit 7, h
+        ld a, 1
+        jr nz, ocY
+        ld a, 2
+        jr ocY
+ocXsmall:
+        ld a, l
+        rla                     ; carry = bit 7 of L
+        ld a, 0
+        jr nc, ocY
+        ld a, 2
+ocY:
+        ld h, a
+        ld a, d
+        or a
+        jr z, ocYsmall
+        bit 7, d
+        ld a, h
+        jr nz, ocYneg
+        or 8
+        ret
+ocYneg:
+        or 4
+        ret
+ocYsmall:
+        ld a, e
+        cp 64
+        ld a, h
+        ret c
+        or 8
+        ret
+
+; drawSegment - draw the segment SEG_X1,Y1 - SEG_X2,Y2 (signed screen pixels)
+; clipped to the screen.
+;
+; A segment that is completely on screen goes straight to glcdLine.  A
+; segment that is entirely off one side of the screen is dropped.  Anything
+; else is walked pixel by pixel with Bresenham; the first and the last pixel
+; that are on the screen are remembered and the piece between them is drawn.
+drawSegment:
+        ld hl, (SEG_X1)
+        ld de, (SEG_X2)
+        or a
+        sbc hl, de
+        jr nz, dsMoves
+        ld hl, (SEG_Y1)
+        ld de, (SEG_Y2)
+        or a
+        sbc hl, de
+        ret z                   ; zero length: nothing to draw
+dsMoves:
+        ld hl, (SEG_X1)
+        ld de, (SEG_Y1)
+        call outcode
+        ld b, a
+        push bc
+        ld hl, (SEG_X2)
+        ld de, (SEG_Y2)
+        call outcode
+        pop bc
+        ld c, a
+        and b
+        ret nz                  ; both ends beyond the same edge
+        ld a, b
+        or c
+        jr nz, dsClip
+        ld a, (SEG_X1)
+        ld b, a
+        ld a, (SEG_Y1)
+        ld c, a
+        ld a, (SEG_X2)
+        ld d, a
+        ld a, (SEG_Y2)
+        ld e, a
+        jp glcdLine
+
+dsClip:
+        ; dx = |x2 - x1|, sx = sign
+        ld hl, (SEG_X2)
+        ld de, (SEG_X1)
+        or a
+        sbc hl, de
+        ld bc, 1
+        bit 7, h
+        jr z, dcX
+        call negHL
+        ld bc, 0FFFFh
+dcX:
+        ld (W_DX), hl
+        ld (W_SX), bc
+        ; dy = |y2 - y1|, sy = sign
+        ld hl, (SEG_Y2)
+        ld de, (SEG_Y1)
+        or a
+        sbc hl, de
+        ld bc, 1
+        bit 7, h
+        jr z, dcY
+        call negHL
+        ld bc, 0FFFFh
+dcY:
+        ld (W_DY), hl
+        ld (W_SY), bc
+        ; err = dx - dy
+        ld hl, (W_DX)
+        ld de, (W_DY)
+        or a
+        sbc hl, de
+        ld (W_ERR), hl
+        ld hl, (SEG_X1)
+        ld (W_X), hl
+        ld hl, (SEG_Y1)
+        ld (W_Y), hl
+        xor a
+        ld (W_SEEN), a
+
+dcLoop:
+        ld hl, (W_X)
+        ld de, (W_Y)
+        call outcode
+        or a
+        jr nz, dcOut
+        ld a, (W_SEEN)
+        or a
+        jr nz, dcLast
+        ld a, 1
+        ld (W_SEEN), a
+        ld hl, (W_X)
+        ld (W_FX), hl
+        ld hl, (W_Y)
+        ld (W_FY), hl
+dcLast:
+        ld hl, (W_X)
+        ld (W_LX), hl
+        ld hl, (W_Y)
+        ld (W_LY), hl
+        jr dcStep
+dcOut:
+        ld a, (W_SEEN)
+        or a
+        jr nz, dcDone           ; it has left the screen again: finished
+dcStep:
+        ld hl, (W_X)
+        ld de, (SEG_X2)
+        or a
+        sbc hl, de
+        jr nz, dcMove
+        ld hl, (W_Y)
+        ld de, (SEG_Y2)
+        or a
+        sbc hl, de
+        jr z, dcDone            ; reached the far end
+dcMove:
+        ld hl, (W_ERR)
+        add hl, hl              ; e2 = 2 * err
+        push hl
+        ex de, hl               ; DE = e2
+        ld hl, (W_DY)
+        call negHL              ; HL = -dy
+        call cmpS               ; carry when -dy < e2
+        jr nc, dcNoX
+        ld hl, (W_ERR)
+        ld de, (W_DY)
+        or a
+        sbc hl, de
+        ld (W_ERR), hl
+        ld hl, (W_X)
+        ld de, (W_SX)
+        add hl, de
+        ld (W_X), hl
+dcNoX:
+        pop hl                  ; HL = e2
+        ld de, (W_DX)
+        call cmpS               ; carry when e2 < dx
+        jp nc, dcLoop
+        ld hl, (W_ERR)
+        ld de, (W_DX)
+        add hl, de
+        ld (W_ERR), hl
+        ld hl, (W_Y)
+        ld de, (W_SY)
+        add hl, de
+        ld (W_Y), hl
+        jp dcLoop
+
+dcDone:
+        ld a, (W_SEEN)
+        or a
+        ret z                   ; never on screen
+        ld a, (W_FX)
+        ld b, a
+        ld a, (W_FY)
+        ld c, a
+        ld a, (W_LX)
+        ld d, a
+        ld a, (W_LY)
+        ld e, a
+        jp glcdLine
+
+; ---------------------------------------------------------------------------
+; Angles
+; ---------------------------------------------------------------------------
+
+; mod360 - HL = HL mod 360 (signed in, 0..359 out).  Clobbers DE.
+mod360:
+        ld de, 360
+        bit 7, h
+        jr z, m360p
+m360n:
+        add hl, de
+        bit 7, h
+        jr nz, m360n
+        ret
+m360p:
+        or a
+        sbc hl, de
+        jr nc, m360p
+        add hl, de
+        ret
+
+; sin256 - HL = angle in degrees 0..359  ->  HL = 256 * sin(angle), signed
+sin256:
+        ld de, 180
+        or a
+        sbc hl, de
+        jr c, sinPos
+        call sinHalf            ; 180..359 is the negative of 0..179
+        jp negHL
+sinPos:
+        add hl, de
+        jp sinHalf
+
+; cos256 - HL = angle in degrees 0..359  ->  HL = 256 * cos(angle), signed
+cos256:
+        ld de, 90
+        add hl, de
+        ld de, 360
+        or a
+        sbc hl, de
+        jr nc, cosOk
+        add hl, de
+cosOk:
+        jp sin256
+
+; sinHalf - HL = angle 0..179  ->  HL = 256 * sin(angle)
+sinHalf:
+        ld de, 91
+        or a
+        sbc hl, de
+        jr c, shDirect          ; 0..90: straight from the table
+        ex de, hl               ; DE = angle - 91
+        ld hl, 89
+        or a
+        sbc hl, de              ; 180 - angle
+        jr shLookup
+shDirect:
+        add hl, de
+shLookup:
+        add hl, hl
+        ld de, sinTable
+        add hl, de
+        ld e, (hl)
+        inc hl
+        ld d, (hl)
+        ex de, hl
+        ret
+
+; round(256 * sin(a)) for a = 0..90 degrees
+sinTable:
+        dw 0, 4, 9, 13, 18, 22, 27, 31
+        dw 36, 40, 44, 49, 53, 58, 62, 66
+        dw 71, 75, 79, 83, 88, 92, 96, 100
+        dw 104, 108, 112, 116, 120, 124, 128, 132
+        dw 136, 139, 143, 147, 150, 154, 158, 161
+        dw 165, 168, 171, 175, 178, 181, 184, 187
+        dw 190, 193, 196, 199, 202, 204, 207, 210
+        dw 212, 215, 217, 219, 222, 224, 226, 228
+        dw 230, 232, 234, 236, 237, 239, 241, 242
+        dw 243, 245, 246, 247, 248, 249, 250, 251
+        dw 252, 253, 254, 254, 255, 255, 255, 256
+        dw 256, 256, 256

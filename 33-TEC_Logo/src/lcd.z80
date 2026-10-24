@@ -1,0 +1,118 @@
+; Turtle state on the TEC-1G 20x4 LCD
+; -----------------------------------
+;
+;       Turtle State:
+;       X= 00 Y=-12 θ=090 PD
+;
+; Row 1 is written once (lcdInit).  Row 2 (lcdStatus) is rewritten after every
+; turtle command: X and Y are the nearest whole pixel, a sign (space or -) and
+; two digits, or ** when the turtle is more than 99 pixels from home; the
+; heading is 000-359 (0F2h is the theta in the LCD's character set); the pen
+; is PU or PD.  Exactly 20 characters, so it never wraps onto the next row.
+;
+; MON3 LCD API (rst 10h):  C=15 B=command    C=13 HL=zero terminated string
+; Command 01h clears the LCD and goes to row 1, 0C0h goes to row 2.
+;
+; LCD_BUF is 21 bytes of RAM.
+
+; lcdInit - clear the LCD, write the title, then the state.  Clobbers everything.
+lcdInit:
+        ld b, 1
+        ld c, 15
+        rst 10h
+        ld hl, lcdTitle
+        ld c, 13
+        rst 10h
+        ; falls through
+
+; lcdStatus - rewrite row 2.  Clobbers everything.
+lcdStatus:
+        ld hl, lcdTemplate
+        ld de, LCD_BUF
+        ld bc, 21
+        ldir
+        ld hl, TURTLE_X
+        ld de, LCD_BUF + 2
+        call lcdPos
+        ld hl, TURTLE_Y
+        ld de, LCD_BUF + 8
+        call lcdPos
+        ld hl, (TURTLE_H)       ; 0..359
+        ld a, '0'
+lcdHund:
+        ld de, 0FF9Ch           ; -100
+        add hl, de
+        jr nc, lcdHundDone      ; went below zero
+        inc a
+        jr lcdHund
+lcdHundDone:
+        ld de, 100
+        add hl, de              ; put the last 100 back
+        ld (LCD_BUF + 14), a
+        ld a, l
+        ld hl, LCD_BUF + 15
+        call lcdDec2
+        ld a, (TURTLE_PEN)
+        or a
+        jr z, lcdSend
+        ld a, 'D'
+        ld (LCD_BUF + 19), a
+lcdSend:
+        ld b, 0C0h
+        ld c, 15
+        rst 10h
+        ld hl, LCD_BUF
+        ld c, 13
+        rst 10h
+        ret
+
+; lcdPos - write a turtle coordinate as sign + 2 digits
+; In : HL = TURTLE_X or TURTLE_Y, DE = where the sign goes
+lcdPos:
+        push de
+        call roundPos           ; HL = nearest pixel
+        pop de
+        ex de, hl               ; HL = destination, DE = the value
+        ld a, ' '
+        bit 7, d
+        jr z, lcdPlus
+        ld a, '-'
+        ld b, a
+        xor a
+        sub e
+        ld e, a
+        ld a, 0
+        sbc a, d
+        ld d, a                 ; DE = |value|
+        ld a, b
+lcdPlus:
+        ld (hl), a
+        inc hl
+        ld a, d
+        or a
+        jr nz, lcdBig
+        ld a, e
+        cp 100
+        jr c, lcdDec2
+lcdBig:
+        ld a, '*'
+        ld (hl), a
+        inc hl
+        ld (hl), a
+        ret
+
+; lcdDec2 - write A (0..99) as two digits at HL
+lcdDec2:
+        ld b, '0' - 1
+lcdTens:
+        inc b
+        sub 10
+        jr nc, lcdTens
+        add a, 10 + '0'
+        ld (hl), b
+        inc hl
+        ld (hl), a
+        ret
+
+lcdTitle:       db "    Turtle State", 0
+lcdTemplate:    db "X= 00 Y= 00 ", 0F2h, "=000 PU", 0

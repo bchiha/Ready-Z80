@@ -1,0 +1,57 @@
+; Error Handler for Logo Compiler
+; -------------------------------
+
+; Error Handler Routine
+; Input: IY = the address of the zero terminated message (ld iy, ERR_xxx)
+; Entered with JP, never CALL, from anywhere in the lexer, parser, code
+; generator or VM.  It does not return: it prints the message and goes back to
+; the REPL prompt (replRecover), which also resets the stack.
+errorHandler:
+        push iy
+        pop hl                  ; HL = message
+        call serStr             ; MON3 serial: send the string
+        call serCRLF
+        jp replRecover
+
+; Error Messages
+ERR_LEX_QW: db "Lexical Error: Quoted word expected", 0
+ERR_LEX_ST: db "Lexical Error: String too long", 0
+ERR_LEX_VR: db "Lexical Error: Variable reference expected", 0
+ERR_LEX_NL: db "Lexical Error: Number too large for 16 bits", 0
+ERR_LEX_IC: db "Lexical Error: Invalid character", 0
+
+ERR_PAR_END: db "Parse Error: Expected end of input", 0
+ERR_PAR_FAC: db "Parse Error: Expected number, variable, '(', or '-'", 0
+ERR_PAR_REP: db "Parse Error: Expected REPEAT", 0
+ERR_PAR_LBR: db "Parse Error: Expected [", 0
+ERR_PAR_RBR: db "Parse Error: Expected ]", 0
+ERR_PAR_RPA: db "Parse Error: Expected )", 0
+ERR_PAR_PEN: db "Parse Error: Expected END", 0
+ERR_PAR_MAK: db "Parse Error: MAKE not followed by quoted word", 0
+ERR_PAR_VAR: db "Parse Error: Too Many Variable references (MAX 16)", 0
+ERR_PAR_PAR: db "Parse Error: Too Many Parameters (MAX 4)", 0
+ERR_PAR_PRF: db "Parse Error: Too Many Procedures (MAX 8)", 0
+ERR_PAR_REL: db "Parse Error: Expected comparison operator", 0
+ERR_PAR_IF:  db "Parse Error: Expected IF", 0
+ERR_PAR_TON: db "Parse Error: TO not followed by a name", 0
+ERR_PAR_PRD: db "Parse Error: Procedure defined twice", 0
+ERR_PAR_PRU: db "Parse Error: Call to a procedure not defined yet", 0
+ERR_PAR_UNC: db "Parse Error: Unknown command", 0
+ERR_PAR_NES: db "Parse Error: Nested TO statements not allowed", 0                  ; TO inside another TO
+
+ERR_GEN_FUL: db "Code Gen Error: Byte Code area full", 0
+ERR_GEN_UNS: db "Code Gen Error: Unsupported statement", 0
+ERR_GEN_FWD: db "Code Gen Error: Function not defined yet", 0
+
+ERR_DEF_FUL: db "Definitions Error: No room to store the procedure", 0
+ERR_DEF_UNK: db "Definitions Error: No such procedure", 0
+
+ERR_DIS_FUL: db "Disassembler Error: Disassembler buffer full", 0
+
+ERR_VM_BADO: db "VM Error: Unknown operator", 0
+ERR_VM_VSTK: db "VM Error: Value Stack overflow", 0
+ERR_VM_RSTK: db "VM Error: Return Stack overflow", 0
+ERR_VM_SSTK: db "VM Error: Save Stack overflow", 0
+ERR_VM_LSTK: db "VM Error: Loop Stack overflow", 0
+ERR_VM_BREK: db "Stopped: key pressed", 0
+ERR_VM_DIV0: db "VM Error: Divide by Zero", 0

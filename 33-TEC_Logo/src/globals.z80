@@ -1,0 +1,260 @@
+; Global Address locations
+; ------------------------
+
+ARENA_PTR:          EQU 0x2000   ; 2 bytes - next free byte in the arena
+AST_ROOT:           EQU 0x2002   ; 2 bytes - pointer to first Node of main program
+SLOT_COUNT:         EQU 0x2004   ; 1 byte  - how many variable slots assigned so far
+PROC_COUNT:         EQU 0x2005   ; 1 byte  - how many procedures registered so far
+TOKEN_PTR:          EQU 0x2006   ; 2 bytes - next free byte in the token buffer
+CODE_PTR:           EQU 0x2008   ; 2 bytes - next free byte of bytecode
+ORIG_SP:            EQU 0x200A   ; 2 bytes - original stack pointer for clean exit
+IN_PROC:            EQU 0x200C   ; 1 byte - set while the parser is inside a TO
+PROC_CODE_PTR:      EQU 0x200D   ; 2 bytes - end of the permanent procedure code
+CODE_LIMIT:         EQU 0x200F   ; 1 byte - first page emitByte must not write into
+STRING_SCRATCH:     EQU 0x2010   ; 8 bytes - scratch space for string operations
+VARNAMES:           EQU 0x2020   ; 16 * 8 bytes, name text for each slot (compile-time lookup only)
+VARVALUES:          EQU 0x20A0   ; 16 * 2 bytes, the actual variable values at runtime
+
+PROCTABLE:          EQU 0x20C0   ; 8 * 16 bytes, see ProcDef layout below
+
+STACK_TOP:          EQU 0x2000   ; stack grows downward from here
+ARENA_BASE:         EQU 0x2140   ; AST records start here and grow upward
+DISASM_LINE:        EQU 0x2140   ; 48 bytes, the current line
+TEXT_BUF:           EQU 0x2E00   ; the entry being typed (all its lines), zero terminated
+TOKEN_BASE:         EQU 0x3000   ; lexer output tokens start here and grow upward
+MAIN_BASE:          EQU 0x3400   ; the current line's code (scratch, rewritten every line)
+PROC_CODE_BASE:     EQU 0x3800   ; procedures, compiled once and kept
+DEFS_BUF:           EQU 0x6000   ; the stored source of every TO ... END (4K; see defs.z80)
+
+; Global Constants
+; ----------------
+MAX_SLOTS:          EQU 16       ; max number of variable slots
+MAX_PROCS:          EQU 8        ; max number of procedures
+MAX_PARAMS:         EQU 4        ; parameters per procedure (fits the 16-byte ProcDef)
+
+PROC_SIZE:          EQU 16       ; bytes per PROCTABLE entry
+PROC_NPARAMS:       EQU 8        ; entry offset: param_count (params follow at +9)
+PROC_BODY:          EQU 13       ; entry offset: body pointer
+
+NODE_NEXT:          EQU 1        ; offset of next node pointer in Node record
+NODE_ARG:           EQU 3        ; offset of argument pointer in Node record
+NODE_ARG2:          EQU 5        ; offset of second argument pointer in Node record
+NODE_SLOT:          EQU 5        ; MAKE's 1-byte slot (same offset as NODE_BODY)
+NODE_BODY:          EQU 5        ; offset of body pointer in Node record
+NODE_COND:          EQU 3        ; offset of condition pointer in Node record
+NODE_ELSE:          EQU 7        ; offset of else pointer in Node record
+NODE_ARGS:          EQU 6        ; CALL node offset: first argument pointer
+NODE_PROC:          EQU 3        ; CALL node: the ProcDef entry
+NODE_ARGC:          EQU 5        ; CALL node: argument count
+PROC_ADDR:          EQU 13       ; same field as PROC_BODY, reused after compiling
+PROC_DONE:          EQU 15       ; set to 1 once a procedure is compiled
+
+TEXT_END_HI:        EQU 0x30     ; first page TEXT_BUF must not reach (it is 512 bytes)
+MAIN_LIMIT_HI:      EQU 0x38     ; first page past the scratch area
+PROC_LIMIT_HI:      EQU 0x40     ; first page past the procedure area
+DEFS_LIMIT_HI:      EQU 0x80     ; first page DEFS_BUF must not reach
+
+; ---- TokenType (lexer output) ----
+TOK_FD:             EQU 1
+TOK_BK:             EQU 2
+TOK_RT:             EQU 3
+TOK_LT:             EQU 4
+TOK_PU:             EQU 5
+TOK_PD:             EQU 6
+TOK_HOME:           EQU 7
+TOK_SETXY:          EQU 8
+TOK_SETX:           EQU 9
+TOK_SETY:           EQU 10
+TOK_CS:             EQU 11
+TOK_REPEAT:         EQU 12
+TOK_MAKE:           EQU 13
+TOK_IF:             EQU 14
+TOK_TO:             EQU 15
+TOK_END:            EQU 16
+
+TOK_LBRACKET:       EQU 17
+TOK_RBRACKET:       EQU 18
+TOK_PLUS:           EQU 19
+TOK_MINUS:          EQU 20
+TOK_STAR:           EQU 21
+TOK_SLASH:          EQU 22
+TOK_LPAREN:         EQU 23
+TOK_RPAREN:         EQU 24
+TOK_EQUAL:          EQU 25   ; Equal needs to be here
+TOK_LESS:           EQU 26
+TOK_GREATER:        EQU 27
+TOK_NOTEQUAL:       EQU 28
+TOK_LESSEQ:         EQU 29
+TOK_GREATEREQ:      EQU 30
+TOK_AFTER_RELOP:    EQU TOK_GREATEREQ + 1   ; a token that comes after a relational operator (for error checking)
+
+TOK_QUOTED_WORD:    EQU 31   ; "NAME  - MAKE's target name
+TOK_VARREF:         EQU 32   ; :NAME  - a variable reference
+TOK_IDENT:          EQU 33   ; bare word - a procedure name (TO line or call)
+
+TOK_NUMBER:         EQU 34
+TOK_EOF:            EQU 35
+TOK_STOP:           EQU 36
+
+; ---- NodeType (statement AST) ----
+CMD_FD:             EQU 0
+CMD_BK:             EQU 1
+CMD_RT:             EQU 2
+CMD_LT:             EQU 3
+CMD_PU:             EQU 4
+CMD_PD:             EQU 5
+CMD_HOME:           EQU 6
+CMD_SETXY:          EQU 7
+CMD_SETX:           EQU 8
+CMD_SETY:           EQU 9
+CMD_CS:             EQU 10
+CMD_REPEAT:         EQU 11
+CMD_MAKE:           EQU 12
+CMD_IF:             EQU 13
+CMD_PROC_DEF:       EQU 14   ; not emitted as a Node on Z80 - see memory map notes
+CMD_CALL:           EQU 15
+CMD_STOP:           EQU 16
+
+; ---- ExprType (expression AST) ----
+EXPR_NUM:           EQU 0
+EXPR_VAR:           EQU 1
+EXPR_NEG:           EQU 2
+EXPR_ADD:           EQU 3
+EXPR_SUB:           EQU 4
+EXPR_MUL:           EQU 5
+EXPR_DIV:           EQU 6
+EXPR_END:           EQU EXPR_DIV + 1
+
+; ---- RelOp (IF condition comparisons) ----
+REL_EQ:             EQU 0
+REL_LT:             EQU 1
+REL_GT:             EQU 2
+REL_NE:             EQU 3
+REL_LE:             EQU 4
+REL_GE:             EQU 5
+
+; ---- VM state (2 bytes each) ----
+VM_PC:              EQU 0x2800   ; address of the next bytecode byte
+VM_SP0:             EQU 0x2802   ; the Z80 SP at vmRun, for HALT
+VM_VSP:             EQU 0x2804   ; value stack pointer
+VM_RSP:             EQU 0x2806   ; return stack pointer
+VM_SSP:             EQU 0x2808   ; save stack pointer
+VM_LSP:             EQU 0x280A   ; loop stack pointer
+
+; ---- Turtle state ----  (TURTLE_X, TURTLE_Y, TURTLE_H contiguous)
+TURTLE_X:           EQU 0x280C   ; 4 bytes, signed, 1/256 pixel
+TURTLE_Y:           EQU 0x2810   ; 4 bytes, signed, 1/256 pixel
+TURTLE_H:           EQU 0x2814   ; 2 bytes, degrees 0..359
+TURTLE_PEN:         EQU 0x2816   ; 1 byte, 1 = pen down
+
+; ---- Turtle scratch ----  (TMP_NX and TMP_NY contiguous)
+TMP_NX:             EQU 0x2818   ; 4 bytes, the position being moved to
+TMP_NY:             EQU 0x281C   ; 4 bytes
+TMP_N:              EQU 0x2820   ; 2 bytes, the FD distance
+SEG_X1:             EQU 0x2822   ; 2 bytes each, signed screen pixels
+SEG_Y1:             EQU 0x2824
+SEG_X2:             EQU 0x2826
+SEG_Y2:             EQU 0x2828
+W_X:                EQU 0x282A   ; 2 bytes each - the clipping walk
+W_Y:                EQU 0x282C
+W_DX:               EQU 0x282E
+W_DY:               EQU 0x2830
+W_SX:               EQU 0x2832
+W_SY:               EQU 0x2834
+W_ERR:              EQU 0x2836
+W_FX:               EQU 0x2838
+W_FY:               EQU 0x283A
+W_LX:               EQU 0x283C
+W_LY:               EQU 0x283E
+W_SEEN:             EQU 0x2840   ; 1 byte
+
+TEXT_PTR:           EQU 0x2850   ; 2 bytes - end of the text (points at the zero)
+LINE_START:         EQU 0x2852   ; 2 bytes - where the line being typed starts
+LAST_CR:            EQU 0x2854   ; 1 byte  - 1 when the last key was CR (so a LF after it is ignored)
+REPL_SP:            EQU 0x2856   ; 2 bytes - the stack pointer logoRepl was entered with
+SNAP_SLOTS:         EQU 0x2858   ; 1 byte  - SLOT_COUNT as the current entry began
+SNAP_PROCS:         EQU 0x2859   ; 1 byte  - PROC_COUNT as the current entry began
+SNAP_CODE:          EQU 0x285A   ; 2 bytes - PROC_CODE_PTR as the current entry began
+DEFS_END:           EQU 0x285C   ; 2 bytes - end of the stored definitions
+DEFS_DIRTY:         EQU 0x2860   ; 1 byte  - 1 once the current entry has changed DEFS_BUF
+RECOVERING:         EQU 0x2861   ; 1 byte  - 1 while replRecover is busy (catches an error inside it)
+DEF_NAME:           EQU 0x2862   ; 9 bytes - a procedure name, upper case, bit 7 on the last letter
+DEF_S:              EQU 0x286C   ; 2 bytes - start of the TO being stored
+DEF_E:              EQU 0x286E   ; 2 bytes - just past its END
+DEF_LEN:            EQU 0x2870   ; 2 bytes - its length
+DEF_COUNT:          EQU 0x2872   ; 1 byte  - definitions found in this entry
+DC_DST:             EQU 0x2873   ; 2 bytes - defsCompact's write pointer
+DS_POS:             EQU 0x2875
+DS_TOTAL:           EQU 0x2877
+DC_MASK:            EQU 0x2879
+LOOP_DEPTH:         EQU 0x287A   ; 1 byte - depth of nested loops
+CUR_PROC:           EQU 0x287B   ; 2 bytes - current procedure
+TRACE_ON:           EQU 0x287D   ; 1 byte - disassembler flag
+LCD_BUF:            EQU 0x2880   ; 21 bytes - LCD display buffer
+; ---- Stacks (page aligned) ----
+VM_VSTACK:          EQU 0x2900   ; 1 page  - values
+VM_RSTACK:          EQU 0x2A00   ; 1 page  - return addresses
+VM_SSTACK:          EQU 0x2B00   ; 2 pages - saved parameter values
+VM_LSTACK:          EQU 0x2D00   ; 1 page  - REPEAT counters
+VM_VSTACK_HI:       EQU 0x29     ; high bytes, for the overflow checks
+VM_RSTACK_HI:       EQU 0x2A
+VM_SSTACK_HI:       EQU 0x2B
+VM_LSTACK_HI:       EQU 0x2D
+
+; ---- Screen ----
+HOME_X:             EQU 64       ; the screen pixel of Logo (0,0)
+HOME_Y:             EQU 32
+
+; ---- MON3 serial API numbers (ld c,N / rst 10h) ----
+KEY_SCAN:           EQU 16       ; scan the TEC-1G keypad
+SER_INIT:           EQU 20       ; initialise the serial port (destroys A)
+SER_PUT:            EQU 22       ; send the character in A
+SER_GET:            EQU 23       ; wait for a character, A = it
+SER_STR:            EQU 45       ; send the zero terminated string at HL
+
+; ---- MON3 GLCD API numbers (ld a,N / rst 18h) ----
+GLCD_INIT:          EQU 0
+GLCD_CLEAR_GBUF:    EQU 1
+GLCD_CLEAR:         EQU 2
+GLCD_GRAPHICS:      EQU 4
+GLCD_LINE:          EQU 7
+GLCD_PLOT:          EQU 12
+GLCD_NOCLEAR:       EQU 18
+
+; ---- Opcodes ----
+OP_PUSH_CONST:      EQU 0
+OP_PUSH_VAR:        EQU 1
+OP_STORE_VAR:       EQU 2
+OP_ADD:             EQU 3
+OP_SUB:             EQU 4
+OP_MUL:             EQU 5
+OP_DIV:             EQU 6
+OP_NEG:             EQU 7
+OP_CMP_EQ:          EQU 8        ; OP_CMP_EQ + REL_xx
+OP_CMP_LT:          EQU 9
+OP_CMP_GT:          EQU 10
+OP_CMP_NE:          EQU 11
+OP_CMP_LE:          EQU 12
+OP_CMP_GE:          EQU 13
+OP_JMP:             EQU 14
+OP_JZ:              EQU 15
+OP_HALT:            EQU 16
+OP_FD:              EQU 17       ; OP_FD + CMD_xx for the 11 turtle commands
+OP_BK:              EQU 18
+OP_RT:              EQU 19
+OP_LT:              EQU 20
+OP_PU:              EQU 21
+OP_PD:              EQU 22
+OP_HOME:            EQU 23
+OP_SETXY:           EQU 24
+OP_SETX:            EQU 25
+OP_SETY:            EQU 26
+OP_CS:              EQU 27
+OP_LOOP_START:      EQU 28
+OP_LOOP_END:        EQU 29
+OP_CALL:            EQU 30
+OP_BIND_VAR:        EQU 31
+OP_UNBIND_VAR:      EQU 32
+OP_RET:             EQU 33
+OP_LOOP_POP:        EQU 34
+OP_COUNT:           EQU 35

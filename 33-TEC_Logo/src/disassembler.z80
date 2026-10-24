@@ -1,0 +1,332 @@
+; Bytecode Disassembler (debug aid)
+; ---------------------------------
+
+; Turns the bytecode into text, one instruction per line.
+;
+;       3000: JMP        0x3018
+;       3003: BIND_VAR   slot 0 (SIDE)
+;       3005: PUSH_CONST 4
+;       3008: LOOP_START 0x3015
+;       300D: FD
+;
+; One way to use it:
+;
+;   disasmLine  - one instruction -> one line of text in DISASM_LINE (zero
+;                 terminated, no CR/LF).  Returns the address of the next
+;                 instruction.  Print each line as you go (MON3 / serial) and
+;                 no big buffer is needed.
+;
+; Variable names are read from VARNAMES, so run it after the parser.
+;
+; Memory used (set these in globals.z80; the defaults sit in the AST arena,
+; which is dead once genProgram has run):
+;     DISASM_LINE      48 bytes   the current line
+;     DISASM_PTR        2 bytes   where disasmAll appends next
+;     DISASM_END        2 bytes   end of the range being disassembled
+;     OP_COUNT                number of opcodes (OP_RET + 1)
+
+; ---------------------------------------------------------------------------
+; disasmLine - one instruction as text
+; Input : HL = address of the instruction
+; Output: DISASM_LINE = the text, zero terminated
+;         HL = address of the next instruction
+; Clobbers A, BC, DE.
+; ---------------------------------------------------------------------------
+disasmLine:
+        ld de, DISASM_LINE      ; DE is the output pointer throughout
+        push hl                 ; [instruction]
+        call putHex16           ; the instruction's address
+        ld a, 0x3A              ; ':'
+        call putChar
+        ld a, 0x20              ; ' '
+        call putChar
+        pop hl                  ; HL = instruction
+        ld a, (hl)              ; the opcode
+        inc hl                  ; HL = its operand (or the next instruction)
+        cp OP_COUNT
+        jr c, dlKnown
+        push hl                 ; unknown opcode: print ?? and treat it as 1 byte
+        ld hl, strBad
+        call putStr
+        pop hl
+        jr dlEnd
+dlKnown:
+        push hl                 ; [operand]
+        push af                 ; [opcode, operand]
+        call putMnemonic        ; A = opcode
+        pop af                  ; A = opcode
+        ld hl, opKinds
+        ld c, a
+        ld b, 0
+        add hl, bc
+        ld a, (hl)              ; A = what kind of operand follows
+        pop hl                  ; HL = operand
+        or a
+        jr z, dlEnd             ; none: HL already is the next instruction
+        cp 1
+        jr z, dlWord
+        cp 2
+        jr z, dlSlot
+        ; kind 3: an address  ->  0xAAAA
+        ld c, (hl)
+        inc hl
+        ld b, (hl)
+        inc hl                  ; HL = next instruction
+        push hl                 ; [next]
+        ld hl, strHex           ; "0x"
+        call putStr
+        ld h, b
+        ld l, c
+        call putHex16
+        pop hl                  ; HL = next instruction
+        jr dlEnd
+dlWord:                         ; kind 1: a signed 16-bit constant
+        ld c, (hl)
+        inc hl
+        ld b, (hl)
+        inc hl                  ; HL = next instruction
+        push hl                 ; [next]
+        ld h, b
+        ld l, c
+        call putDecS
+        pop hl                  ; HL = next instruction
+        jr dlEnd
+dlSlot:                         ; kind 2: a variable slot  ->  slot N (NAME)
+        ld a, (hl)
+        inc hl                  ; HL = next instruction
+        push hl                 ; [next]
+        call putSlot
+        pop hl                  ; HL = next instruction
+dlEnd:
+dlTrim:                         ; drop the padding after a mnemonic with no operand
+        dec de
+        ld a, (de)
+        cp 0x20
+        jr z, dlTrim
+        inc de
+        xor a
+        ld (de), a              ; end of the line
+        ret
+
+; ---------------------------------------------------------------------------
+; Text helpers.  DE is always the output pointer and is advanced.
+; ---------------------------------------------------------------------------
+
+; putChar - A = character
+putChar:
+        ld (de), a
+        inc de
+        ret
+
+; putStr - HL = a zero-terminated string
+putStr:
+        ld a, (hl)
+        or a
+        ret z
+        inc hl
+        call putChar
+        jr putStr
+
+; putHex16 - HL = value, written as 4 hex digits.  Keeps HL.
+putHex16:
+        ld a, h
+        call putHex8
+        ld a, l
+putHex8:                        ; A = value, written as 2 hex digits
+        push af
+        rrca
+        rrca
+        rrca
+        rrca
+        call putNibble
+        pop af
+putNibble:                      ; low 4 bits of A as one hex digit
+        and 0x0F
+        add a, 0x30             ; '0'
+        cp 0x3A                 ; past '9'?
+        jr c, putChar
+        add a, 7                ; skip to 'A'..'F'
+        jr putChar
+
+; putDecS - HL = a signed 16-bit value, written in decimal (with a '-' if negative)
+putDecS:
+        bit 7, h
+        jr z, putDecU
+        ld a, 0x2D              ; '-'
+        call putChar
+        ld a, l                 ; HL = 0 - HL  (for -32768 this gives 32768)
+        cpl
+        ld l, a
+        ld a, h
+        cpl
+        ld h, a
+        inc hl
+
+; putDecU - HL = an unsigned 16-bit value, written in decimal, no leading zeros
+; Divides by 10 until nothing is left, then writes the digits back-to-front.
+; Clobbers A, B, HL.
+putDecU:
+        ld b, 0                 ; B = how many digits
+pdDivide:
+        call div10              ; HL = HL / 10, A = the remainder
+        push af
+        inc b
+        ld a, h
+        or l
+        jr nz, pdDivide
+pdPrint:
+        pop af
+        add a, 0x30             ; '0'
+        call putChar
+        djnz pdPrint
+        ret
+
+; div10 - HL = HL / 10, A = HL mod 10.   Keeps BC.
+div10:
+        push bc
+        ld c, 16
+        xor a                   ; A = the remainder so far
+d10loop:
+        add hl, hl              ; shift the next bit of HL out ...
+        rla                     ; ... into the remainder
+        cp 10
+        jr c, d10skip
+        sub 10
+        inc l                   ; this quotient bit is 1
+d10skip:
+        dec c
+        jr nz, d10loop
+        pop bc
+        ret
+
+; putSlot - A = a variable slot, written as   slot N (NAME)
+; Clobbers A, BC, HL.
+putSlot:
+        push af                 ; [slot]
+        ld hl, strSlot          ; "slot "
+        call putStr
+        pop af
+        push af                 ; [slot]
+        ld l, a
+        ld h, 0
+        call putDecU            ; N
+        ld hl, strOpen          ; " ("
+        call putStr
+        pop af                  ; A = slot
+        ld l, a
+        ld h, 0
+        add hl, hl
+        add hl, hl
+        add hl, hl              ; * 8: each VARNAMES entry is 8 bytes
+        ld bc, VARNAMES
+        add hl, bc              ; HL = the name
+        ld b, 8                 ; a name is never longer than 8 characters
+putName:
+        ld a, (hl)
+        inc hl
+        push af
+        and 0x7F                ; the last character has bit 7 set
+        call putChar
+        pop af
+        bit 7, a
+        jr nz, pnDone
+        djnz putName            ; (the limit keeps a bad slot number from running on)
+pnDone:
+        ld a, 0x29              ; ')'
+        jp putChar
+
+; putMnemonic - A = opcode, written padded to 11 columns (10 + a space)
+; Clobbers A, BC, HL.
+putMnemonic:
+        ld hl, mnemonics
+        or a
+        jr z, pmFound
+        ld b, a
+pmNext:                         ; skip B names
+        ld a, (hl)
+        inc hl
+        bit 7, a
+        jr z, pmNext            ; through the character with bit 7 set
+        djnz pmNext
+pmFound:
+        ld c, 0                 ; C = characters written
+pmCopy:
+        ld a, (hl)
+        inc hl
+        push af
+        and 0x7F
+        call putChar
+        inc c
+        pop af
+        bit 7, a
+        jr z, pmCopy
+pmPad:
+        ld a, c
+        cp 11
+        ret nc
+        ld a, 0x20
+        call putChar
+        inc c
+        jr pmPad
+
+; ---------------------------------------------------------------------------
+; Tables, in opcode order
+; ---------------------------------------------------------------------------
+
+; What follows each opcode:  0 nothing, 1 a signed 16-bit constant,
+;                            2 a variable slot, 3 an address
+opKinds:
+        db 1, 2, 2                          ; PUSH_CONST PUSH_VAR STORE_VAR
+        db 0, 0, 0, 0, 0                    ; ADD SUB MUL DIV NEG
+        db 0, 0, 0, 0, 0, 0                 ; CMP_EQ CMP_LT CMP_GT CMP_NE CMP_LE CMP_GE
+        db 3, 3, 0                          ; JMP JZ HALT
+        db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  ; FD BK RT LT PU PD HOME SETXY SETX SETY CS
+        db 3, 3, 3                          ; LOOP_START LOOP_END CALL
+        db 2, 2, 0, 0                       ; BIND_VAR UNBIND_VAR RET STOP
+
+; The mnemonics; the last character of each has bit 7 set
+mnemonics:
+        db "PUSH_CONS", "T" + 128
+        db "PUSH_VA", "R" + 128
+        db "STORE_VA", "R" + 128
+        db "AD", "D" + 128
+        db "SU", "B" + 128
+        db "MU", "L" + 128
+        db "DI", "V" + 128
+        db "NE", "G" + 128
+        db "CMP_E", "Q" + 128
+        db "CMP_L", "T" + 128
+        db "CMP_G", "T" + 128
+        db "CMP_N", "E" + 128
+        db "CMP_L", "E" + 128
+        db "CMP_G", "E" + 128
+        db "JM", "P" + 128
+        db "J", "Z" + 128
+        db "HAL", "T" + 128
+        db "F", "D" + 128
+        db "B", "K" + 128
+        db "R", "T" + 128
+        db "L", "T" + 128
+        db "P", "U" + 128
+        db "P", "D" + 128
+        db "HOM", "E" + 128
+        db "SETX", "Y" + 128
+        db "SET", "X" + 128
+        db "SET", "Y" + 128
+        db "C", "S" + 128
+        db "LOOP_STAR", "T" + 128
+        db "LOOP_EN", "D" + 128
+        db "CAL", "L" + 128
+        db "BIND_VA", "R" + 128
+        db "UNBIND_VA", "R" + 128
+        db "RE", "T" + 128
+        db "LOOP_PO", "P" + 128
+
+strBad:
+        db "??", 0
+strHex:
+        db "0x", 0
+strSlot:
+        db "slot ", 0
+strOpen:
+        db " (", 0
