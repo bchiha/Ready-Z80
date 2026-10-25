@@ -35,7 +35,7 @@ Programmed by B. Chiha for the TEC-1G
 3. The terminal displays:
 
 ```
-TEC-1G Logo by B. Chiha (2026)   BYE exits, NEW starts again
+TEC Logo by Brian Chiha...   BYE exits, NEW starts again
 ? 
 ```
 
@@ -72,6 +72,7 @@ produces a square.
 - Heading is expressed in whole degrees. **0° points straight up**, 90° right, 180° down, 270° left. `RT` rotates clockwise.
 - The pen starts down; movement therefore draws. `PU` raises the pen.
 - Lines that leave the visible area are clipped. The turtle may leave and re-enter the screen; only the visible portion is rendered.
+- Current turtle X position, Y position, Angle and Pen State are shown on the 20x4 LCD screen.
 
 ### Numeric representation
 
@@ -468,10 +469,10 @@ The exterior angle is 360 divided by the number of sides.
 ### Rotating squares
 
 ```
-? TO SQ :S
+? TO SQUARE :S
 >   REPEAT 4 [ FD :S RT 90 ]
 > END
-? REPEAT 6 [ SQ 20 RT 60 ]
+? REPEAT 6 [ SQUARE 20 RT 60 ]
 ```
 
 ### Dashed line
@@ -531,7 +532,12 @@ The exterior angle is 360 divided by the number of sides.
 
 ```
 ? MAKE "SIDE 10
-? REPEAT 5 [ REPEAT 4 [ FD :SIDE RT 90 ] MAKE "SIDE :SIDE + 5 ]
+? REPEAT 5 [
+>   REPEAT 4 [
+>      FD :SIDE RT 90
+>   ]
+>   MAKE "SIDE :SIDE + 5
+> ]
 ```
 
 ### Recursive spiral controlled by IF
